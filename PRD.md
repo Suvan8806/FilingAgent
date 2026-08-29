@@ -268,7 +268,16 @@ At least two questions must specifically probe fiscal-period misalignment (e.g. 
 
 Only `faithfulness` uses the judge. Everything else is computed without an LLM in the loop.
 
-- **FR8.5** **Judge determinism.** The judge model is pinned, temperature 0, JSON-only output. Every judgment is written to `eval/fixtures/judgments/` keyed by a content hash of (question, answer, context). CI **replays** these fixtures rather than calling the API. Live judging runs on demand via `make eval-live`.
+- **FR8.5** **Judge determinism.** *(Revised — `temperature: 0` is not available on current models.)* `temperature`, `top_p`, and `top_k` were removed on Claude Opus 4.7+ and return a **400**; Sonnet 5 rejects any non-default value. Sending `temperature: 0` would hard-fail at runtime. It was never the real guarantee anyway — the fixture replay is. The determinism stack is:
+
+  1. **Pinned model ID** — read from env (`JUDGE_MODEL`). **Default provider is Groq's free tier** (`openai/gpt-oss-120b` over the OpenAI-compatible endpoint — `llama-3.3-70b-versatile` is retired; verify against Groq's current model list, as free-tier availability shifts); Anthropic (`claude-opus-5`) is the alternate. See `.env.example` for both. A free tier also makes FR6.3's public-demo spend cap structural rather than merely configured — there is no billing relationship to drain.
+  2. **Guaranteed JSON via structured outputs** — `output_config.format` with a `json_schema` (`additionalProperties: false`, explicit `required`). This *guarantees* parseable output rather than requesting it in prose. The older top-level `output_format` parameter is deprecated.
+  3. **`output_config.effort: "low"`** — applying a rubric does not need deep reasoning.
+  4. **Content-hash fixture replay** — every judgment written to `eval/fixtures/judgments/` keyed by a hash of (question, answer, context). **CI replays these fixtures and never calls the API.** This is what makes a red build mean a real regression.
+
+  Live judging runs on demand via `make eval-live`.
+
+  **Cost note.** A Claude Max subscription covers Claude Code, **not** the Anthropic API — this service's own runtime calls are billed separately. Embeddings are already local (§9), and the cross-model judge below is local, so the metered surface is the four arms plus the primary judge.
 
 - **FR8.6** **Paired comparison.** All arms answer identical questions. Report per-item paired results and use McNemar's test for arm-vs-arm significance rather than treating arms as independent samples. Report per-tier confidence intervals.
 
@@ -277,7 +286,7 @@ Only `faithfulness` uses the judge. Everything else is computed without an LLM i
 - **FR8.8** **Judge-reliability check.** *(Revised — was "hand-agreement check.")* The original requirement had a human verify five judge outputs against the rubric. With the build fully agent-executed, an agent grading the judge is the same model class judging itself and is not evidence. Three automated checks replace it:
 
   1. **Determinism replay** — re-run the judge 3× at temperature 0 on the same 5 items; assert byte-identical verdicts. Catches a judge that is nondeterministic despite the pin.
-  2. **Cross-model agreement** — a *different* model applies the same rubric to the same 5 items; report the inter-judge agreement rate.
+  2. **Cross-model agreement** — a *different* model applies the same rubric to the same 5 items; report the inter-judge agreement rate. **The second judge runs locally via Ollama** (e.g. `llama3.1:8b` / `qwen2.5:7b` on `http://localhost:11434`). A different lab's weights is a stronger independence claim than two Claude models agreeing with each other, and it is free, offline, and fully reproducible. Skipped with a clear message when Ollama is unreachable, so a fresh clone never hard-fails.
   3. **Adversarial fixtures** — hand-built cases drawn from `tests/fixtures/` (never from the golden set) containing a known-unsupported claim. The judge must mark them unfaithful.
 
   **The README must report this as "cross-model judge agreement," never as "hand-verified."** Describing an automated check as a human one is exactly the overclaim this PRD's four-arm design exists to avoid, and it would undermine the FR8.2 claim that carries the project.

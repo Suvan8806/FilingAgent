@@ -1,0 +1,45 @@
+# FilingAgent local deployment (Lane G — PLAN.md Wave 1 / FR10.2).
+#
+# Brings up the API with a persisted Chroma volume. The image (see
+# Dockerfile) bakes the vector index and facts DB in at build time; the
+# named volumes below let that baked-in data survive `docker compose down`
+# / container recreation instead of being rebuilt from scratch on every
+# restart. Docker populates a fresh named volume from the image's own
+# directory contents the first time it's mounted, so this does not shadow
+# the baked-in index with an empty directory.
+#
+# Usage:
+#   cp .env.example .env   # fill in ANTHROPIC_API_KEY at minimum
+#   docker compose up --build
+#   curl http://localhost:8000/healthz
+
+services:
+  api:
+    build: .
+    image: filingagent-api:latest
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}"
+      EDGAR_USER_AGENT: "${EDGAR_USER_AGENT:-FilingAgent research contact@example.com}"
+      CHROMA_DIR: /app/chroma_db
+      TRACE_DB: /app/trace_data/traces.sqlite
+      # FR6.3 — public deployment safety. Override in .env for local dev
+      # if the defaults are too restrictive; never remove entirely before
+      # the link goes public.
+      RATE_LIMIT_PER_MIN: "${RATE_LIMIT_PER_MIN:-10}"
+      DAILY_REQUEST_CAP: "${DAILY_REQUEST_CAP:-200}"
+    volumes:
+      - chroma_data:/app/chroma_db
+      - trace_data:/app/trace_data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  chroma_data:
+  trace_data:

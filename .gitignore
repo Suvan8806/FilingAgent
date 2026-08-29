@@ -3,11 +3,10 @@
 .cursor/
 __pycache__/
 *.pyc
-.pytest_cache/
-.ruff_cache/
 .env
 .venv/
 venv/
 chroma_db/
 *.sqlite
+*.db
 results/
