@@ -14,7 +14,9 @@
 #     on container start times out free-tier hosting.
 #
 # Build: docker build -t filingagent-api .
-# Run:   docker run -p 8000:8000 -e ANTHROPIC_API_KEY=sk-... filingagent-api
+# Run:   docker run -p 8000:8000 -e GEMINI_API_KEY=... filingagent-api
+# (GEMINI_API_KEY is the default provider's key — see LLM_PROVIDER in
+# .env.example. Never bake a key into the image; pass it at run time.)
 # (docker-compose.yml is the preferred way to run this locally — it also
 # mounts a persisted volume over CHROMA_DIR so the store baked in here
 # survives container recreation; Docker copies this image's baked-in
@@ -62,7 +64,14 @@ ENV RATE_LIMIT_PER_MIN=10 \
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=3).status == 200 else 1)"
+# PORT is injected by most container hosts (Render, Fly, Railway, Cloud Run)
+# and must be honored, or the platform's health probe never connects and the
+# deploy is marked failed. Defaults to 8000 so local `docker run -p 8000:8000`
+# and docker-compose.yml keep working unchanged.
+ENV PORT=8000
 
-CMD ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen(f\"http://localhost:{os.environ.get('PORT','8000')}/healthz\", timeout=3).status == 200 else 1)"
+
+# Shell form, so $PORT is expanded at container start rather than baked in.
+CMD uvicorn src.api:app --host 0.0.0.0 --port ${PORT}

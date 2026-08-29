@@ -1,0 +1,63 @@
+# Render Blueprint — one-click deploy of the FilingAgent API + UI.
+#
+# Usage: in the Render dashboard choose "New +" -> "Blueprint", point it at
+# this repo, and set GEMINI_API_KEY when prompted. Everything else here is
+# already configured.
+#
+# Why Render and not Vercel: Vercel's Python runtime is serverless -- a
+# read-only filesystem, a bundle size cap, and no long-lived process. This
+# service bakes a ChromaDB index into its image at build time (PRD FR6.2) and
+# writes SQLite traces at runtime, so it needs a container host. Vercel is
+# still fine for a static mirror of the UI pointed at this API.
+
+services:
+  - type: web
+    name: filingagent
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+
+    # The image runs `python -m src.ingest` at build time, so the vector store
+    # and fact table are already populated when the container starts. Do not
+    # move ingestion to container boot: a multi-minute ingest on start blows
+    # through the platform's health-check window and the deploy is marked
+    # failed (PRD FR6.2).
+    healthCheckPath: /healthz
+
+    envVars:
+      # Set this in the Render dashboard, not here. `sync: false` means Render
+      # prompts for it and keeps it out of the repo.
+      - key: GEMINI_API_KEY
+        sync: false
+
+      - key: LLM_PROVIDER
+        value: gemini
+
+      # All four arms share one model -- a difference between arms would
+      # confound the comparison (PRD FR3). Re-verify this string against the
+      # provider's current list before a measurement run: gemini-2.0-flash was
+      # already retired mid-build, as was a previously pinned Groq model.
+      - key: LLM_MODEL
+        value: gemini-3.6-flash
+      - key: JUDGE_MODEL
+        value: gemini-3.6-flash
+
+      # Public-demo safety rails (FR6.3). These are tested against these exact
+      # defaults in tests/test_api_integration.py, and a test parses
+      # .env.example so documentation and code cannot drift apart. Do not raise
+      # them without re-reading that test.
+      - key: RATE_LIMIT_PER_MIN
+        value: "10"
+      - key: DAILY_REQUEST_CAP
+        value: "200"
+
+      # Match the paths the Dockerfile baked the index into.
+      - key: CHROMA_DIR
+        value: /app/chroma_db
+      - key: TRACE_DB
+        value: /app/traces.sqlite
+
+# Note on the free plan: the instance sleeps after inactivity and its disk is
+# ephemeral, so the first request after a sleep is slow and `/stats` resets on
+# restart. Trace *persistence* within a run is unaffected and still
+# demonstrable. Attach a paid disk if durable traces are ever needed.

@@ -1,0 +1,61 @@
+# Build-context exclusions.
+#
+# Two reasons this file matters here beyond build speed:
+#
+#  1. `.env` holds a real provider key. The Dockerfile never COPYs it, but an
+#     excluded file cannot be leaked by a future COPY either -- keep it out of
+#     the context entirely rather than relying on the Dockerfile staying
+#     careful.
+#  2. `chroma_db/` and `facts.db` are LOCAL ingest output. The image builds its
+#     own via `RUN python -m src.ingest` (FR6.2). Shipping the local copies in
+#     would upload hundreds of MB and risk a stale index silently shadowing
+#     the freshly built one.
+#
+# NOTE: `data/` is deliberately NOT excluded. The Dockerfile copies it and the
+# build-time ingest reads the committed filings from it.
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Local ingest output — the image builds its own
+chroma_db/
+*.sqlite
+*.sqlite3
+facts.db
+traces.sqlite
+
+# VCS and CI
+.git/
+.github/
+.gitignore
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtualenvs
+.venv/
+venv/
+
+# Tests and docs are not needed at runtime and only invalidate layer caches
+tests/
+docs/
+*.md
+!README.md
+
+# Agent/editor tooling
+.claude/
+.cursor/
+.rocketride/
+.vscode/
+.idea/
+
+# Compose is for local development, not the image
+docker-compose.yml
