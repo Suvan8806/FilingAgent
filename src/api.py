@@ -252,13 +252,23 @@ def _default_dispatch() -> dict[str, Callable[[str], QueryResponse]]:
     # mode to a typed 503 instead. The other three arms are core project
     # code: an ImportError there is a genuine packaging defect and must
     # still fail loudly at boot rather than be papered over.
-    try:
-        from src.agent_langgraph import run_agent_langgraph
-    except ImportError as exc:
-        logger.warning("agent_langgraph arm unavailable; degrading that mode to 503: %s", exc)
-        dispatch["agent_langgraph"] = _unavailable_arm("agent_langgraph", f"import failed ({exc})")
-    else:
-        dispatch["agent_langgraph"] = run_agent_langgraph
+    # Imported on FIRST USE rather than at startup. `langgraph` drags in
+    # `langchain_core`, and holding that resident to serve the other three
+    # arms is pure overhead: on a 512MB instance this stack already sits near
+    # the ceiling, and the container was being OOM-killed after its health
+    # check had already reported healthy. The cost is a one-time import on the
+    # first agent_langgraph request; the eval harness calls each arm many
+    # times, so it amortises away and does not distort the latency comparison
+    # ADR 002 rests on.
+    def _langgraph_arm(question: str) -> QueryResponse:
+        try:
+            from src.agent_langgraph import run_agent_langgraph
+        except ImportError as exc:
+            logger.warning("agent_langgraph arm unavailable; degrading that mode to 503: %s", exc)
+            return _unavailable_arm("agent_langgraph", f"import failed ({exc})")(question)
+        return run_agent_langgraph(question)
+
+    dispatch["agent_langgraph"] = _langgraph_arm
 
     return dispatch
 
