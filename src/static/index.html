@@ -1,0 +1,680 @@
+<!doctype html>
+<!--
+  FilingAgent — single-file front end (Lane L).
+
+  Served by FastAPI itself at GET / (see src/api.py). No build step, no npm,
+  no framework, no CDN: every byte of CSS and JS is inline, so the API and
+  the UI ship as one service, one image, one URL.
+
+  The page exists for one reason: PRD FR3's four-arm comparison is the whole
+  thesis of this project, and it is currently invisible unless you read raw
+  JSON. Selecting two or more arms runs the same question against each and
+  renders them side by side — the point being to make "one tool call and
+  wrong" vs "several tool calls and right" legible at a glance.
+
+  Security note: every value that comes back from /query originates in SEC
+  filing text or an LLM completion, i.e. untrusted input. No server value is
+  ever assigned as raw markup — every node is built with createElement and
+  every string lands via textContent. The one place a server value reaches an
+  attribute (Citation.source_url -> <a href>) is scheme-checked first, see
+  `linkOrText`. tests/test_frontend.py enforces both halves of that.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FilingAgent — four-arm SEC filing Q&amp;A</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📄</text></svg>">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --panel-2: #fbfbfc;
+    --text: #14171c;
+    --muted: #616874;
+    --border: #e1e4ea;
+    --accent: #2f5fd0;
+    --accent-soft: #eaf0fd;
+    --accent-text: #1e46a3;
+    --ok-bg: #e6f4ec; --ok-text: #14653c;
+    --warn-bg: #fdf1de; --warn-text: #8a5407;
+    --danger-bg: #fdeceb; --danger-text: #a3211a;
+    --code-bg: #f1f3f6;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101318;
+      --panel: #171b22;
+      --panel-2: #1c2129;
+      --text: #e6e9ef;
+      --muted: #9aa3b2;
+      --border: #2a3039;
+      --accent: #6b9bff;
+      --accent-soft: #1c2942;
+      --accent-text: #a9c4ff;
+      --ok-bg: #12301f; --ok-text: #7fdca8;
+      --warn-bg: #382709; --warn-text: #f0c078;
+      --danger-bg: #3a1614; --danger-text: #f5a29b;
+      --code-bg: #11151b;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { max-width: 100%; overflow-x: hidden; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  /* 1320px is not arbitrary: it is the narrowest width at which all four
+     arms fit as four columns given the padding, gap, and 300px minimum
+     below. Below it the grid degrades to 3 / 2 / 1 columns on its own. */
+  .wrap { max-width: 1320px; margin: 0 auto; padding: 28px 18px 64px; }
+
+  h1 { font-size: 1.5rem; margin: 0 0 6px; letter-spacing: -0.01em; }
+  h2 { font-size: 0.95rem; margin: 0 0 10px; }
+  .lede { color: var(--muted); margin: 0 0 4px; max-width: 68ch; }
+  .lede strong { color: var(--text); font-weight: 600; }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+  }
+  section.compose { margin-top: 22px; }
+
+  label.field-label {
+    display: block;
+    font-weight: 600;
+    font-size: 0.85rem;
+    margin-bottom: 6px;
+  }
+  textarea {
+    width: 100%;
+    min-height: 84px;
+    resize: vertical;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    font: inherit;
+  }
+  textarea:focus-visible, button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .examples { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .chip {
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    border-radius: 999px;
+    padding: 5px 12px;
+    font-size: 0.82rem;
+    cursor: pointer;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--accent-text); }
+  .chip .chip-tier { color: var(--muted); }
+
+  .hint { color: var(--muted); font-size: 0.82rem; margin: 14px 0 8px; }
+
+  .arms {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 10px;
+  }
+  .arm {
+    text-align: left;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 11px 12px;
+    cursor: pointer;
+    font: inherit;
+  }
+  .arm[aria-pressed="true"] {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .arm .arm-name { font-weight: 600; display: block; }
+  .arm .arm-id {
+    display: block;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.72rem;
+    color: var(--muted);
+    margin: 1px 0 5px;
+    word-break: break-all;
+  }
+  .arm .arm-blurb { display: block; font-size: 0.8rem; color: var(--muted); }
+
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 14px; }
+  .run {
+    background: var(--accent);
+    color: #fff;
+    border: 0;
+    border-radius: 8px;
+    padding: 10px 20px;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .run[disabled] { opacity: 0.55; cursor: progress; }
+  .form-note { color: var(--muted); font-size: 0.82rem; }
+  .form-error { color: var(--danger-text); font-size: 0.85rem; font-weight: 600; }
+
+  .results {
+    display: grid;
+    /* min() so a single column can go narrower than 300px on a small phone
+       instead of forcing the page to scroll sideways. */
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+    gap: 14px;
+    margin-top: 22px;
+    align-items: start;
+  }
+  .result { min-width: 0; }
+  .result header { border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 12px; }
+  .result h2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+  .result .mode-id {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.74rem;
+    font-weight: 400;
+    color: var(--muted);
+    word-break: break-all;
+  }
+
+  .badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .badge {
+    font-size: 0.74rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .badge.ok { background: var(--ok-bg); color: var(--ok-text); }
+  .badge.warn { background: var(--warn-bg); color: var(--warn-text); }
+  .badge.danger { background: var(--danger-bg); color: var(--danger-text); }
+  .badge.neutral { background: var(--code-bg); color: var(--muted); }
+
+  .callout {
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 0.86rem;
+    margin-bottom: 12px;
+  }
+  .callout.warn { background: var(--warn-bg); color: var(--warn-text); }
+  .callout.danger { background: var(--danger-bg); color: var(--danger-text); }
+
+  .block { margin-top: 14px; }
+  .block > h3 {
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin: 0 0 7px;
+  }
+  .answer { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+  ol.trace { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+  ol.trace > li {
+    border-left: 2px solid var(--accent);
+    padding: 0 0 0 10px;
+    margin-bottom: 10px;
+  }
+  .tool-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+  .tool-name {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-weight: 600;
+    font-size: 0.85rem;
+    overflow-wrap: anywhere;
+  }
+  .tool-step { color: var(--muted); font-size: 0.78rem; }
+  pre {
+    background: var(--code-bg);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin: 6px 0 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.78rem;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+  .tool-result { font-size: 0.85rem; color: var(--muted); overflow-wrap: anywhere; }
+
+  ul.citations { list-style: none; margin: 0; padding: 0; }
+  ul.citations > li { font-size: 0.85rem; margin-bottom: 5px; overflow-wrap: anywhere; }
+  ul.citations .cite-src { font-weight: 600; }
+  a { color: var(--accent-text); }
+
+  .empty { color: var(--muted); font-size: 0.85rem; }
+
+  .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: -2px;
+    margin-right: 7px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
+
+  footer {
+    margin-top: 34px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.82rem;
+  }
+  footer a { margin-right: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>FilingAgent</h1>
+  <p class="lede">
+    Natural-language questions over four SEC 10-K filings (MSFT &amp; AAPL, FY2023 &amp; FY2024),
+    answered four different ways. <strong>Pick two or more arms to see them answer side by
+    side</strong> — that comparison, not any single answer, is what this project measures.
+  </p>
+
+  <section class="compose card">
+    <label class="field-label" for="question">Question</label>
+    <textarea id="question" placeholder="Ask something about Microsoft's or Apple's FY2023 / FY2024 10-K…"></textarea>
+
+    <div class="examples" id="examples"></div>
+
+    <p class="hint">
+      Arms to run. They differ only in how much they are allowed to do — same corpus, same tools,
+      same model.
+    </p>
+    <div class="arms" id="arms"></div>
+
+    <div class="actions">
+      <button type="button" class="run" id="run">Run</button>
+      <span class="form-note" id="form-note"></span>
+    </div>
+  </section>
+
+  <div class="results" id="results" aria-live="polite"></div>
+
+  <footer>
+    <a href="/docs">OpenAPI docs</a>
+    <a href="/stats">/stats</a>
+    <a href="/healthz">/healthz</a>
+    <span>Public demo — rate limited and daily-capped.</span>
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // --- The four frozen arms (src/schemas.py :: Mode). Order here is the
+  // order results render in: naive floor -> confound control -> agency ->
+  // framework, which is the order the experiment reads in. -----------------
+  var ARMS = [
+    {
+      mode: "baseline_rag",
+      name: "Plain RAG",
+      blurb: "Top-5 chunks, one shot, no tools. The naive floor.",
+      emptyTrace: "No tool calls — this arm retrieves once and answers. It has no way to look up an exact figure or do arithmetic."
+    },
+    {
+      mode: "baseline_tools",
+      name: "Tools, one call",
+      blurb: "Same three tools as the agent, but capped at exactly one call. Isolates tool access from agency.",
+      emptyTrace: "No tool call recorded."
+    },
+    {
+      mode: "agent_custom",
+      name: "Agent (tool loop)",
+      blurb: "Up to 5 turns. Can look a number up, do the math, then go read the narrative.",
+      emptyTrace: "No tool calls recorded."
+    },
+    {
+      mode: "agent_langgraph",
+      name: "Agent (LangGraph)",
+      blurb: "Same behavior and same tools, orchestrated by LangGraph. Isolates the framework.",
+      emptyTrace: "No tool calls recorded."
+    }
+  ];
+
+  var DEFAULT_SELECTION = ["baseline_tools", "agent_custom"];
+
+  // Verbatim from data/golden.jsonl — human-authored, never paraphrased here.
+  var EXAMPLES = [
+    {
+      tier: "multi-hop",
+      question: "By how much did Microsoft's total revenue change from FY2023 to FY2024, and what principal growth drivers did management identify in MD&A?"
+    },
+    {
+      tier: "numeric",
+      question: "What was Microsoft's total revenue in raw USD for fiscal year 2023?"
+    },
+    {
+      tier: "unanswerable",
+      question: "What was Amazon's total net sales in fiscal year 2024 according to its Form 10-K?"
+    }
+  ];
+
+  var SECTION_LABELS = {
+    item1: "Item 1 — Business",
+    item1a: "Item 1A — Risk Factors",
+    item7: "Item 7 — MD&A"
+  };
+
+  var RATE_LIMIT_MESSAGE =
+    "Rate limit reached. This is a public demo with a per-IP cap of a few requests a minute — " +
+    "wait about a minute and run it again.";
+
+  // --- Tiny DOM helpers. Everything server-supplied lands via textContent;
+  // no raw-markup sink is used anywhere in this file. ------------------------
+
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) { node.className = className; }
+    if (text !== undefined && text !== null) { node.textContent = String(text); }
+    return node;
+  }
+
+  function clear(node) {
+    while (node.firstChild) { node.removeChild(node.firstChild); }
+  }
+
+  /**
+   * Render `url` as a link only if it is an http(s) URL we can parse.
+   * Anything else (javascript:, data:, a malformed string an LLM invented)
+   * is rendered as inert text instead of becoming an href.
+   */
+  function linkOrText(url, label) {
+    var parsed = null;
+    try { parsed = new URL(String(url), window.location.origin); } catch (err) { parsed = null; }
+    if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+      return el("span", "empty", label);
+    }
+    var anchor = el("a", null, label);
+    anchor.href = parsed.href;
+    anchor.target = "_blank";
+    anchor.rel = "noopener noreferrer";
+    return anchor;
+  }
+
+  function num(value) {
+    var n = Number(value);
+    return isFinite(n) ? Math.round(n).toLocaleString() : "—";
+  }
+
+  function plural(count, one, many) {
+    return count + " " + (count === 1 ? one : many);
+  }
+
+  // --- Build the controls --------------------------------------------------
+
+  var questionInput = document.getElementById("question");
+  var examplesRow = document.getElementById("examples");
+  var armsRow = document.getElementById("arms");
+  var runButton = document.getElementById("run");
+  var formNote = document.getElementById("form-note");
+  var resultsRow = document.getElementById("results");
+
+  EXAMPLES.forEach(function (example) {
+    var chip = el("button", "chip");
+    chip.type = "button";
+    chip.appendChild(el("span", "chip-tier", example.tier + " · "));
+    chip.appendChild(el("span", null, example.question));
+    chip.addEventListener("click", function () {
+      questionInput.value = example.question;
+      questionInput.focus();
+    });
+    examplesRow.appendChild(chip);
+  });
+
+  var armButtons = {};
+  ARMS.forEach(function (arm) {
+    var button = el("button", "arm");
+    button.type = "button";
+    button.dataset.mode = arm.mode;
+    button.setAttribute("aria-pressed", DEFAULT_SELECTION.indexOf(arm.mode) !== -1 ? "true" : "false");
+    button.appendChild(el("span", "arm-name", arm.name));
+    button.appendChild(el("span", "arm-id", arm.mode));
+    button.appendChild(el("span", "arm-blurb", arm.blurb));
+    button.addEventListener("click", function () {
+      var on = button.getAttribute("aria-pressed") === "true";
+      button.setAttribute("aria-pressed", on ? "false" : "true");
+    });
+    armsRow.appendChild(button);
+    armButtons[arm.mode] = button;
+  });
+
+  function selectedModes() {
+    return ARMS.filter(function (arm) {
+      return armButtons[arm.mode].getAttribute("aria-pressed") === "true";
+    });
+  }
+
+  // --- Result cards --------------------------------------------------------
+
+  function makeCard(arm) {
+    var card = el("section", "result card");
+    var head = el("header");
+    var title = el("h2");
+    title.appendChild(el("span", null, arm.name));
+    title.appendChild(el("span", "mode-id", arm.mode));
+    head.appendChild(title);
+    var badges = el("div", "badges");
+    head.appendChild(badges);
+    card.appendChild(head);
+    var body = el("div", "body");
+    card.appendChild(body);
+    card._badges = badges;
+    card._body = body;
+    return card;
+  }
+
+  function setLoading(card) {
+    clear(card._badges);
+    clear(card._body);
+    var line = el("p", "empty");
+    line.appendChild(el("span", "spinner"));
+    line.appendChild(el("span", null, "Running…"));
+    card._body.appendChild(line);
+  }
+
+  function setError(card, headline, detail) {
+    clear(card._badges);
+    card._badges.appendChild(el("span", "badge danger", "Failed"));
+    clear(card._body);
+    var callout = el("div", "callout danger");
+    callout.appendChild(el("strong", null, headline));
+    if (detail) {
+      callout.appendChild(document.createElement("br"));
+      callout.appendChild(el("span", null, detail));
+    }
+    card._body.appendChild(callout);
+  }
+
+  function badge(card, kind, text) {
+    card._badges.appendChild(el("span", "badge " + kind, text));
+  }
+
+  function block(title) {
+    var wrapper = el("div", "block");
+    wrapper.appendChild(el("h3", null, title));
+    return wrapper;
+  }
+
+  function renderResult(card, arm, data) {
+    clear(card._badges);
+    clear(card._body);
+
+    var trace = Array.isArray(data.trace) ? data.trace : [];
+    var citations = Array.isArray(data.citations) ? data.citations : [];
+
+    if (data.refused) {
+      badge(card, "warn", "Refused");
+    } else {
+      badge(card, "ok", "Answered");
+    }
+    if (data.incomplete) {
+      badge(card, "warn", "Incomplete — hit the turn cap");
+    }
+    badge(card, "neutral", num(data.latency_ms) + " ms");
+    badge(card, "neutral", plural(trace.length, "tool call", "tool calls"));
+    badge(card, "neutral", plural(citations.length, "citation", "citations"));
+
+    if (data.refused) {
+      card._body.appendChild(el(
+        "div",
+        "callout warn",
+        "This arm declined to answer rather than fabricate one. On a question the corpus " +
+        "cannot support, that is the designed behavior, not a failure."
+      ));
+    }
+    if (data.incomplete) {
+      card._body.appendChild(el(
+        "div",
+        "callout warn",
+        "The agent hit its 5-turn cap before finishing. The answer below is partial."
+      ));
+    }
+
+    var answerBlock = block("Answer");
+    answerBlock.appendChild(el("div", "answer", data.answer || "(empty)"));
+    card._body.appendChild(answerBlock);
+
+    var traceBlock = block("Tool calls (" + trace.length + ")");
+    if (!trace.length) {
+      traceBlock.appendChild(el("p", "empty", arm.emptyTrace));
+    } else {
+      var list = el("ol", "trace");
+      trace.forEach(function (call, index) {
+        var item = el("li");
+        var head = el("div", "tool-head");
+        head.appendChild(el("span", "tool-step", (index + 1) + "."));
+        head.appendChild(el("span", "tool-name", call.name));
+        head.appendChild(el("span", "tool-step", num(call.latency_ms) + " ms"));
+        item.appendChild(head);
+
+        var args = el("pre");
+        var argsText;
+        try { argsText = JSON.stringify(call.arguments, null, 2); } catch (err) { argsText = String(call.arguments); }
+        args.textContent = argsText === undefined ? "{}" : argsText;
+        item.appendChild(args);
+
+        item.appendChild(el("div", "tool-result", call.result_summary || "(no summary)"));
+        list.appendChild(item);
+      });
+      traceBlock.appendChild(list);
+    }
+    card._body.appendChild(traceBlock);
+
+    var citeBlock = block("Citations (" + citations.length + ")");
+    if (!citations.length) {
+      citeBlock.appendChild(el("p", "empty", "No sources cited."));
+    } else {
+      var citeList = el("ul", "citations");
+      citations.forEach(function (citation) {
+        var item = el("li");
+        var label = citation.ticker + " · FY" + citation.fiscal_year;
+        item.appendChild(el("span", "cite-src", label));
+        item.appendChild(el("span", null, " · " + (SECTION_LABELS[citation.section] || citation.section)));
+        item.appendChild(document.createElement("br"));
+        item.appendChild(linkOrText(citation.source_url, citation.chunk_id));
+        citeList.appendChild(item);
+      });
+      citeBlock.appendChild(citeList);
+    }
+    card._body.appendChild(citeBlock);
+  }
+
+  // --- Request -------------------------------------------------------------
+
+  function ask(question, arm, card) {
+    return fetch("/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: question, mode: arm.mode })
+    }).then(function (response) {
+      return response.json().catch(function () { return null; }).then(function (payload) {
+        if (response.status === 429) {
+          setError(card, "Rate limited", RATE_LIMIT_MESSAGE);
+          return;
+        }
+        if (!response.ok) {
+          // src/api.py renders every failure as a typed ErrorResponse
+          // {error, detail} — never a stack trace. Fall back to the status
+          // line if some proxy in front of us returns something else.
+          var detail = (payload && payload.detail) ? String(payload.detail) : ("HTTP " + response.status);
+          setError(card, "This arm could not answer", detail);
+          return;
+        }
+        if (!payload) {
+          setError(card, "Unreadable response", "The server returned a body this page could not parse.");
+          return;
+        }
+        renderResult(card, arm, payload);
+      });
+    }).catch(function () {
+      setError(card, "Could not reach the service", "The request failed before a response came back. Check your connection and try again.");
+    });
+  }
+
+  function run() {
+    var question = questionInput.value.trim();
+    var arms = selectedModes();
+
+    clear(formNote);
+    formNote.className = "form-note";
+
+    if (!question) {
+      formNote.className = "form-error";
+      formNote.textContent = "Type a question first (or pick one of the examples).";
+      return;
+    }
+    if (!arms.length) {
+      formNote.className = "form-error";
+      formNote.textContent = "Select at least one arm to run.";
+      return;
+    }
+
+    clear(resultsRow);
+    runButton.disabled = true;
+    formNote.textContent = arms.length > 1
+      ? "Running the same question against " + arms.length + " arms…"
+      : "Running…";
+
+    var pending = arms.map(function (arm) {
+      var card = makeCard(arm);
+      resultsRow.appendChild(card);
+      setLoading(card);
+      return ask(question, arm, card);
+    });
+
+    Promise.all(pending).then(function () {
+      runButton.disabled = false;
+      formNote.textContent = arms.length > 1
+        ? "Compare the tool-call traces: that is where the arms actually differ."
+        : "";
+    });
+  }
+
+  runButton.addEventListener("click", run);
+  questionInput.addEventListener("keydown", function (event) {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { run(); }
+  });
+})();
+</script>
+</body>
+</html>

@@ -67,7 +67,15 @@ This is a real production failure mode in financial data systems, it is invisibl
 
 - Real-time filing ingestion or scheduled updates
 - Multi-tenancy, user accounts, or persistent chat history
-- A frontend beyond the auto-generated OpenAPI docs page
+- ~~A frontend beyond the auto-generated OpenAPI docs page~~ — **relaxed.**
+  A single self-contained page (`src/static/index.html`, served at `GET /`)
+  now ships: no build step, no framework, no CDN. It exists because the
+  four-arm comparison is this project's entire thesis and was otherwise
+  legible only by reading raw JSON — the page runs one question against
+  several arms at once and puts their tool traces side by side, so the
+  difference between one tool call and a multi-turn loop is visible rather
+  than inferred. The non-goal it still honors: no SPA, no build pipeline,
+  no client-side state beyond the current query.
 - Coverage beyond the fixed 2-company / 2-year corpus
 - Financial advice of any kind — the service reports what filings say, nothing more
 

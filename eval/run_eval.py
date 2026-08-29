@@ -128,11 +128,14 @@ def _tier_counts(golden: list[GoldenItem]) -> dict[str, int]:
 # --- numeric extraction ----------------------------------------------------------------
 
 
-def _find_dollar_figures(text: str) -> list[float]:
-    """Best-effort extraction of raw dollar amounts from free text, largest
-    first. Not a general NLP number parser — deliberately narrow to the
-    "$X" / "$X billion" / "X,XXX,XXX" shapes the golden answers and (we
-    expect) the arms' answers actually use.
+def _find_dollar_figures_in_order(text: str) -> list[float]:
+    """Raw dollar amounts in the order they appear in `text`.
+
+    Positional order is load-bearing for the multi-hop delta branch, which
+    needs the figure *nearest* a change-keyword. Sorting there picks the
+    largest figure in the window instead — and in the golden set's own
+    phrasing ("increased $33.2 billion ... from $211,915,000,000") the
+    largest figure in the window is the endpoint, not the delta.
     """
     figures = []
     for match in _RAW_DOLLAR_RE.finditer(text):
@@ -150,8 +153,18 @@ def _find_dollar_figures(text: str) -> list[float]:
         if scale is None and value < 1000:
             continue
         figures.append(value)
-    figures.sort(reverse=True)
     return figures
+
+
+def _find_dollar_figures(text: str) -> list[float]:
+    """Best-effort extraction of raw dollar amounts from free text, largest
+    first. Not a general NLP number parser — deliberately narrow to the
+    "$X" / "$X billion" / "X,XXX,XXX" shapes the golden answers and (we
+    expect) the arms' answers actually use.
+
+    Use `_find_dollar_figures_in_order` when position matters.
+    """
+    return sorted(_find_dollar_figures_in_order(text), reverse=True)
 
 
 def _extract_numeric_value(answer: str, tier: str) -> float | None:
@@ -178,7 +191,15 @@ def _extract_numeric_value(answer: str, tier: str) -> float | None:
 
     for keyword_match in _DELTA_KEYWORDS.finditer(answer):
         window = answer[keyword_match.end() : keyword_match.end() + 60]
-        nearby = _find_dollar_figures(window)
+        # Nearest by POSITION, not largest. The window routinely contains the
+        # delta and an endpoint both -- "increased $33.2 billion ... from
+        # $211,915,000,000" -- and the endpoint is the larger number. Taking
+        # the largest here scored 3 of the 4 multi-hop items wrong against the
+        # golden set's own phrasing, which would have collapsed the
+        # agent_custom vs baseline_tools multi-hop comparison (the project's
+        # headline claim) to a near-zero tie for reasons having nothing to do
+        # with either arm.
+        nearby = _find_dollar_figures_in_order(window)
         if nearby:
             return nearby[0]
 
@@ -244,9 +265,20 @@ def _to_result_dict(item: GoldenItem, response: QueryResponse) -> dict:
     }
 
 
-def _item_passed(item: GoldenItem, result: dict) -> bool:
+def _item_passed(item: GoldenItem, result: dict) -> bool | None:
     """Tier-appropriate pass/fail for a single scored item — the paired
     boolean McNemar's test operates on (FR8.6).
+
+    Returns **None** for an item that could not be scored at all, which
+    today means only one thing: a `single_hop` item whose judgment is
+    missing from the replay fixtures, where `judge_faithfulness` raised
+    `JudgeFixtureMissingError` and left `faithful=None`.
+
+    None means EXCLUDE, exactly as `expected_sources: []` does for recall@5
+    (PLAN.md Contract decision #3). Scoring an unjudged item `False` would
+    report a faithfulness collapse that did not happen — with an empty
+    `eval/fixtures/judgments/`, every arm would publish `single_hop 0/10`,
+    indistinguishable in the table from a real one.
     """
     if not result:
         return False
@@ -259,7 +291,10 @@ def _item_passed(item: GoldenItem, result: dict) -> bool:
         allowed = tolerance * abs(item.expected_numeric)
         return abs(result["numeric_value"] - item.expected_numeric) <= allowed
     # single_hop
-    return result.get("faithful") is True
+    faithful = result.get("faithful")
+    if faithful is None:
+        return None
+    return faithful is True
 
 
 # --- scoring ----------------------------------------------------------------
@@ -278,10 +313,21 @@ def _tier_breakdown(results: list[dict], golden: list[GoldenItem]) -> dict:
     breakdown = {}
     for tier in TIERS:
         items = [g for g in golden if g.tier == tier]
-        n = len(items)
-        passed = sum(1 for g in items if _item_passed(g, results_by_id.get(g.question_id)))
+        verdicts = [_item_passed(g, results_by_id.get(g.question_id)) for g in items]
+        # None = unscorable, excluded from BOTH numerator and denominator.
+        # `n` is therefore the scored count, not the tier size, so that the
+        # published rate never divides by items nobody actually graded.
+        scorable = [v for v in verdicts if v is not None]
+        n = len(scorable)
+        passed = sum(1 for v in scorable if v)
         lower, upper = wilson_confidence_interval(passed, n)
-        breakdown[tier] = {"n": n, "passed": passed, "rate": passed / n if n else float("nan"), "ci_95": [lower, upper]}
+        breakdown[tier] = {
+            "n": n,
+            "passed": passed,
+            "excluded": len(verdicts) - n,
+            "rate": passed / n if n else float("nan"),
+            "ci_95": [lower, upper],
+        }
     return breakdown
 
 
@@ -299,10 +345,17 @@ def _score_arm(results: list[dict], golden: list[GoldenItem]) -> dict:
         "recall_at_5": recall_at_5_detail(results, golden),
         "numeric_accuracy": numeric_accuracy_detail(results, golden),
         "refusal_accuracy": refusal_accuracy_detail(results, golden),
+        # `denominator` is the number of items actually judged, NOT the tier
+        # size, so the published rate and its parenthetical counts divide by
+        # the same number. Reporting "50% (2/10)" when 4 of 10 were judged
+        # invites the reader to conclude 8 items failed, when 6 were simply
+        # never graded. `excluded` keeps that omission visible rather than
+        # silent — the same contract recall@5 uses for unretrievable items.
         "faithfulness": {
             "correct": faithful_correct,
             "scored": len(faithful_scored),
-            "denominator": len(single_hop_ids),
+            "denominator": len(faithful_scored),
+            "excluded": len(single_hop_ids) - len(faithful_scored),
             "rate": faithful_correct / len(faithful_scored) if faithful_scored else float("nan"),
         },
         "p50_latency_ms": _percentile(latencies, 50),
@@ -312,27 +365,42 @@ def _score_arm(results: list[dict], golden: list[GoldenItem]) -> dict:
     }
 
 
+def _paired_verdicts(
+    items: list[GoldenItem], pass_a: dict[str, bool | None], pass_b: dict[str, bool | None]
+) -> tuple[list[bool], list[bool]]:
+    """The two aligned verdict lists McNemar's test consumes, keeping only
+    items **both** arms actually scored.
+
+    McNemar's is a paired test, so a dropped item must be dropped from both
+    sides or the pairing silently misaligns. An unscored item (`None`, i.e.
+    a missing judge fixture) is not evidence of disagreement and must not
+    be counted as one.
+    """
+    a_list, b_list = [], []
+    for item in items:
+        a, b = pass_a.get(item.question_id), pass_b.get(item.question_id)
+        if a is None or b is None:
+            continue
+        a_list.append(a)
+        b_list.append(b)
+    return a_list, b_list
+
+
 def _pairwise_comparisons(
-    arms: list[str], per_arm_pass: dict[str, dict[str, bool]], golden: list[GoldenItem]
+    arms: list[str], per_arm_pass: dict[str, dict[str, bool | None]], golden: list[GoldenItem]
 ) -> dict:
     comparisons = {}
     for i, arm_a in enumerate(arms):
         for arm_b in arms[i + 1 :]:
             key = f"{arm_a}_vs_{arm_b}"
-            entry = {
-                "overall": mcnemar_test(
-                    [per_arm_pass[arm_a][g.question_id] for g in golden],
-                    [per_arm_pass[arm_b][g.question_id] for g in golden],
-                )
-            }
+            entry = {"overall": mcnemar_test(*_paired_verdicts(golden, per_arm_pass[arm_a], per_arm_pass[arm_b]))}
             for tier in TIERS:
                 tier_items = [g for g in golden if g.tier == tier]
                 if not tier_items:
                     entry[tier] = None
                     continue
                 entry[tier] = mcnemar_test(
-                    [per_arm_pass[arm_a][g.question_id] for g in tier_items],
-                    [per_arm_pass[arm_b][g.question_id] for g in tier_items],
+                    *_paired_verdicts(tier_items, per_arm_pass[arm_a], per_arm_pass[arm_b])
                 )
             comparisons[key] = entry
     return comparisons

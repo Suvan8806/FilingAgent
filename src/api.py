@@ -25,6 +25,17 @@ Endpoints:
   src.traces.get_stats (FR7.2).
 - `GET /docs` — free, from FastAPI's OpenAPI generation. No custom work
   needed here beyond not disabling it.
+- `GET /` — the front end: one self-contained HTML file (`src/static/
+  index.html`) with all CSS and JS inline. No build step, no CDN, no second
+  process — the UI and the API are one service on one URL, which is what
+  makes the public deploy (FR6.1) a single container rather than two. The
+  page's purpose is to make FR3's four-arm comparison visible: it can run
+  one question against several arms at once and render their traces side by
+  side. It talks only to this service's own `/query`, so no key ever
+  reaches a browser. PRD §3 lists "a frontend beyond the auto-generated
+  OpenAPI docs page" as a non-goal; that non-goal is knowingly relaxed here
+  at the user's request, and the cost is one static file plus one route —
+  no new dependency, no build tooling, no change to any existing endpoint.
 
 Required before the deploy link goes public (FR6.3, non-negotiable):
 - Per-IP rate limit — `RATE_LIMIT_PER_MIN` (.env.example).
@@ -64,11 +75,12 @@ import uuid
 from collections import deque
 from collections.abc import Callable
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -81,6 +93,13 @@ logger = logging.getLogger("filingagent.api")
 _DEFAULT_RATE_LIMIT_PER_MIN = 10
 _DEFAULT_DAILY_CAP = 200
 _RATE_LIMIT_WINDOW_SECONDS = 60.0
+
+# The front end (see module docstring). Lives under src/ deliberately: the
+# Dockerfile already does `COPY src/ ./src/`, so the page ships in the image
+# with no change to the build — a top-level static/ directory would silently
+# not be copied and `GET /` would 404 in production while passing locally.
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+INDEX_HTML = STATIC_DIR / "index.html"
 
 CANNED_CAPACITY_MESSAGE = (
     "This public demo has reached its daily request capacity. Please try "
@@ -356,6 +375,28 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
 
 def _register_routes(app: FastAPI) -> None:
+    @app.get("/", include_in_schema=False)
+    async def index() -> FileResponse:
+        """Serve the single-file front end (see module docstring).
+
+        Read from disk per request rather than cached in memory at import
+        time: it is one small file, the OS page cache makes the second read
+        free, and it keeps `uvicorn --reload` honest during development.
+        `include_in_schema=False` keeps `/openapi.json` describing the JSON
+        API only — the page is not part of the machine contract.
+        """
+        if not INDEX_HTML.is_file():
+            # Honest typed 404 rather than a Starlette RuntimeError at send
+            # time, which would surface as a 500 with no useful cause.
+            raise StarletteHTTPException(
+                status_code=404,
+                detail=(
+                    f"UI asset missing at {INDEX_HTML}. The JSON API is unaffected — "
+                    "see /docs."
+                ),
+            )
+        return FileResponse(INDEX_HTML, media_type="text/html; charset=utf-8")
+
     @app.post("/query", response_model=QueryResponse)
     async def query(body: QueryRequest, request: Request) -> QueryResponse:
         trace_id = str(uuid.uuid4())
