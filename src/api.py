@@ -17,7 +17,9 @@ Endpoints:
   src.agent_langgraph.run_agent_langgraph) — not four divergent `if/elif`
   branches. Every invocation is persisted via src.traces.record_trace
   (FR7.1) and gets a per-request trace ID in structured JSON logs (FR5.2).
-  Response body: `QueryResponse`.
+  Response body: `QueryResponse`. If an arm's module cannot be imported at
+  dispatch-construction time, that one mode degrades to a typed 503 while
+  the other three keep serving — see `_default_dispatch`.
 - `GET /healthz` — liveness + vector store reachability.
 - `GET /stats` — corpus stats and rolling operational metrics, via
   src.traces.get_stats (FR7.2).
@@ -180,21 +182,66 @@ def _log_event(event: str, **fields: Any) -> None:
 # --- Dispatch construction --------------------------------------------------
 
 
+def _unavailable_arm(mode: Mode, reason: str) -> Callable[[str], QueryResponse]:
+    """Stand-in handler for an arm whose module could not be imported.
+
+    Raises a typed 503 (rendered as `ErrorResponse` by the app-wide handler)
+    rather than letting `/query` 500 or, worse, silently aliasing the mode to
+    a different arm — PLAN.md's cut order is explicit that a missing
+    `agent_langgraph` must stay "honest about being unimplemented, not
+    silently aliased to agent_custom".
+    """
+
+    def _handler(question: str) -> QueryResponse:
+        raise StarletteHTTPException(
+            status_code=503,
+            detail=(
+                f"Mode {mode!r} is unavailable in this deployment: {reason}. "
+                "The other modes are unaffected — retry with a different mode."
+            ),
+        )
+
+    return _handler
+
+
 def _default_dispatch() -> dict[str, Callable[[str], QueryResponse]]:
     """Import the four arms lazily (at create_app() time, not module import
     time) and wire them into a single mode -> handler dispatch dict — the
     control-arm design this whole project is built around (PRD FR3).
+
+    All four arms already share the `(question: str) -> QueryResponse`
+    signature; the three tool-using ones additionally accept optional
+    `client` / `tool_functions` / `provider` dependency-injection keywords
+    (Lane E), which this dispatch deliberately does not pass — production
+    resolves the real provider client from `src.llm`, and tests stub that
+    boundary instead of the dispatch signature.
     """
     from src.agent import run_agent_custom
-    from src.agent_langgraph import run_agent_langgraph
     from src.baseline import run_baseline_rag, run_baseline_tools
 
-    return {
+    dispatch: dict[str, Callable[[str], QueryResponse]] = {
         "baseline_rag": run_baseline_rag,
         "baseline_tools": run_baseline_tools,
         "agent_custom": run_agent_custom,
-        "agent_langgraph": run_agent_langgraph,
     }
+
+    # `agent_langgraph` is the only arm sitting behind a heavy third-party
+    # framework (PLAN.md cut order item 1: "keep the import and a stub").
+    # A hard import here means that if `langgraph` is missing from the
+    # deployed image, `import src.api` itself explodes and *every* mode dies
+    # — one optional dependency causing a total outage. Degrade that single
+    # mode to a typed 503 instead. The other three arms are core project
+    # code: an ImportError there is a genuine packaging defect and must
+    # still fail loudly at boot rather than be papered over.
+    try:
+        from src.agent_langgraph import run_agent_langgraph
+    except ImportError as exc:
+        logger.warning("agent_langgraph arm unavailable; degrading that mode to 503: %s", exc)
+        dispatch["agent_langgraph"] = _unavailable_arm("agent_langgraph", f"import failed ({exc})")
+    else:
+        dispatch["agent_langgraph"] = run_agent_langgraph
+
+    return dispatch
 
 
 def _canned_capacity_response(mode: Mode) -> QueryResponse:
@@ -372,6 +419,15 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/healthz", response_model=HealthResponse)
     async def healthz() -> HealthResponse:
+        # Wave 1 carried an extra `except NotImplementedError` clause here
+        # reporting "not yet implemented". It guarded the Wave 0 *store*
+        # stub, not any arm — and Lane B has since shipped a real
+        # `src.store.search`, so that clause is now dead code whose message
+        # would be actively wrong if it ever fired. `except Exception`
+        # below already covers NotImplementedError (it subclasses
+        # RuntimeError), so removing it loses no coverage. Arm availability
+        # is handled where it actually belongs, at dispatch construction —
+        # see `_default_dispatch` / `_unavailable_arm`.
         try:
             from src import store
 
@@ -379,8 +435,6 @@ def _register_routes(app: FastAPI) -> None:
             # event loop like every other synchronous call in this app.
             await run_in_threadpool(store.search, query="__healthcheck__", k=1)
             return HealthResponse(status="ok", vector_store="reachable")
-        except NotImplementedError:
-            return HealthResponse(status="degraded", vector_store="not yet implemented")
         except Exception as exc:  # noqa: BLE001 — liveness probe must never raise
             return HealthResponse(status="degraded", vector_store=f"unreachable: {exc}")
 

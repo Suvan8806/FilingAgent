@@ -22,3 +22,10 @@ langgraph==0.2.45
 # The anthropic pin above is retained as the alternate provider implementation
 # behind src/llm.py, so the arms stay portable across both.
 openai>=1.54,<2
+
+# Loads `.env` from src/__init__.py and eval/__init__.py. Required, not
+# optional: src/llm.py and eval/judge.py resolve provider, model, and API key
+# at module import time, so without this a fresh shell sees no credentials at
+# all. Already present transitively via uvicorn[standard]; pinned explicitly
+# because the code now depends on it directly.
+python-dotenv>=1.0,<2

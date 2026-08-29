@@ -17,18 +17,20 @@ guarantee).** `temperature`/`top_p`/`top_k` were removed on Claude Opus
 `temperature: 0` unconditionally would hard-fail on the Anthropic path. The
 determinism stack, per the revised FR8.5:
 
-1. **Pinned model ID**, read from env. Default provider is Groq's free
-   tier (`JUDGE_MODEL`, default `openai/gpt-oss-120b` over the
-   OpenAI-compatible endpoint at `GROQ_BASE_URL` — `llama-3.3-70b-versatile`
-   is retired; re-verify against Groq's current model list before any live
-   run, as free-tier availability shifts); Anthropic (`ANTHROPIC_MODEL`,
-   e.g. `claude-opus-5`) is the alternate. See `.env.example` for both, and
-   `LLM_PROVIDER` for the switch.
-2. **`temperature=0` only on the OpenAI-compatible path** (Groq, and the
-   local Ollama cross-model check) — it is valid there. It is *never* sent
-   on the Anthropic path; provider dispatch below is what keeps this from
-   being a hardcoded global that hard-fails whenever
-   `LLM_PROVIDER=anthropic`.
+1. **Pinned model ID**, read from env (`JUDGE_MODEL`). Any OpenAI-compatible
+   provider works — `_OPENAI_COMPATIBLE` below maps the provider to its key
+   variable and base URL, and `LLM_BASE_URL` overrides the URL for endpoints
+   not in that table. Anthropic (`ANTHROPIC_MODEL`, e.g. `claude-opus-5`) is
+   the alternate, and is separate because its wire format genuinely differs.
+   **Re-verify the pinned model against the provider's current list before
+   any live run** — free-tier availability shifts, and a previously pinned
+   Groq model (`llama-3.3-70b-versatile`) was retired mid-build. See
+   `.env.example` for the full set and `LLM_PROVIDER` for the switch.
+2. **`temperature=0` only on the OpenAI-compatible path** (verified accepted
+   there, including the local Ollama cross-model check). It is *never* sent
+   on the Anthropic path, where non-default sampling params return a 400;
+   the provider dispatch below is what keeps this from being a hardcoded
+   global that hard-fails whenever `LLM_PROVIDER=anthropic`.
 3. **JSON-only output**, requested via `response_format={"type":
    "json_schema", ...}` on providers that support structured outputs, with
    a fallback to `{"type": "json_object"}` plus an explicit schema spelled
@@ -87,8 +89,21 @@ FIXTURES_DIR = REPO_ROOT / "eval" / "fixtures" / "judgments"
 # module only cares about the judge's own provider choice.
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "groq")
 
-GROQ_API_KEY_ENV = "GROQ_API_KEY"
-GROQ_BASE_URL = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+# OpenAI-compatible providers, mirroring `src/llm.py`'s `_OPENAI_COMPATIBLE`
+# table. Kept as its own table rather than imported because FR8.8 allows the
+# judge to run on a different provider than the arms — importing the arms'
+# already-resolved constants would silently couple the two choices together.
+_OPENAI_COMPATIBLE: dict[str, tuple[str, str]] = {
+    # provider: (api-key env var, default base URL)
+    "groq": ("GROQ_API_KEY", "https://api.groq.com/openai/v1"),
+    "gemini": ("GEMINI_API_KEY", "https://generativelanguage.googleapis.com/v1beta/openai/"),
+}
+
+# Falls back to the groq entry for an unrecognized provider, so a typo surfaces
+# as a clear missing-key error naming the expected variable rather than a
+# KeyError on this table.
+API_KEY_ENV, _DEFAULT_BASE_URL = _OPENAI_COMPATIBLE.get(LLM_PROVIDER, _OPENAI_COMPATIBLE["groq"])
+BASE_URL = os.environ.get("LLM_BASE_URL") or _DEFAULT_BASE_URL
 
 ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
 
@@ -288,22 +303,21 @@ def _call_model_anthropic(model: str, question: str, answer: str, context: list[
 
 
 def _call_primary_model(question: str, answer: str, context: list[str]) -> dict:
-    """Provider dispatch for the primary judge — Groq (default) or
-    Anthropic (alternate), per LLM_PROVIDER (PRD FR8.5, .env.example).
+    """Provider dispatch for the primary judge — any OpenAI-compatible
+    provider (default) or Anthropic (alternate), per LLM_PROVIDER
+    (PRD FR8.5, .env.example).
     """
     model = _judge_model()
     if LLM_PROVIDER == "anthropic":
         return _call_model_anthropic(model, question, answer, context)
 
-    api_key = os.environ.get(GROQ_API_KEY_ENV)
+    api_key = os.environ.get(API_KEY_ENV)
     if not api_key:
         raise RuntimeError(
-            f"{GROQ_API_KEY_ENV} is required for live judging via Groq (see .env.example). "
-            "Fixture-replay mode (live=False) does not need it."
+            f"{API_KEY_ENV} is required for live judging via {LLM_PROVIDER!r} "
+            "(see .env.example). Fixture-replay mode (live=False) does not need it."
         )
-    return _call_model_openai_compatible(
-        model, question, answer, context, base_url=GROQ_BASE_URL, api_key=api_key
-    )
+    return _call_model_openai_compatible(model, question, answer, context, base_url=BASE_URL, api_key=api_key)
 
 
 def _call_ollama_model(question: str, answer: str, context: list[str]) -> dict | None:

@@ -163,22 +163,52 @@ refresh path only. Do not re-scrape during the build.
 
 ---
 
-## Wave 2 — Integration (2 agents → 1, ~2h)
+## Wave 2 — Integration (3 agents → 1, ~2h) — IN PROGRESS
 
-| Step | Agent | Work |
-|---|---|---|
-| 2.1 | Agent I | Flip the `NotImplementedError` guard to hard-fail. Wire real `store`/`facts` into `tools`. Run `make ingest` against `data/raw/`. Resolve interface drift. |
-| 2.2 | Agent J *(concurrent)* | Wire all four modes into `/query`. Integration test hitting every mode with a stubbed LLM. Verify traces persist and `/stats` populates. |
+Widened from 2 lanes to 3. `agent_langgraph` was the only genuine stub left, and the cut-order
+rule (§Cut order, item 1) permits dropping it *only if the build runs long* — it has not, and
+`langgraph==0.2.45` was already pinned in Wave 0. Implementing it is what makes the Wave 2 exit
+criterion "zero `NotImplementedError`" true without carving out an exemption.
+
+| Step | Agent | Owns (exclusive write) | Work |
+|---|---|---|---|
+| 2.1 | Agent I | `Makefile`, `tests/test_no_stubs.py`, `src/tools.py` | Flip the guard to hard-fail. Wire real `store`/`facts` into `tools`. Run `make ingest` against `data/raw/`. Resolve interface drift. |
+| 2.2 | Agent J *(concurrent)* | `src/api.py`, `src/traces.py`, `tests/test_api.py` | Wire all four modes into `/query`. Integration test every mode with a stubbed LLM. Verify traces persist, `/stats` populates, and the FR6.3 rails engage. |
+| 2.3 | Agent K *(concurrent)* | `src/agent_langgraph.py` | Implement the fourth arm on LangGraph, behaviorally equivalent to `agent_custom` except for orchestration. |
 
 Then **serially**: build the image with the index baked in, deploy to free tier, confirm public
 `/docs` responds, and verify the rate limit and spend cap engage **before** the URL goes anywhere.
 
+### Wave 2 pre-work, already landed
+
+- **`.env` loading.** `src/llm.py` and `eval/judge.py` resolve provider, model, and API key at
+  *module import time*, so a config module they import would run too late. `load_dotenv(...,
+  override=False)` now lives in `src/__init__.py` and `eval/__init__.py`; `python-dotenv` is
+  pinned. `override=False` keeps real env vars and `monkeypatch.setenv` authoritative, and makes
+  the call a silent no-op in CI where no `.env` exists.
+- **Groq verified live** — auth, tool calling, and strict-schema structured output all confirmed
+  against `openai/gpt-oss-120b`. `temperature=0` is accepted on this path (it 400s on Anthropic;
+  the provider split in `eval/judge.py` is correct).
+
+### The guard was measuring the wrong thing
+
+`tests/test_no_stubs.py` scanned for the *substring* `NotImplementedError`, which matches
+`except NotImplementedError:` in `src/api.py` and plain docstring prose in `eval/run_eval.py`.
+Flipping it to hard-fail unchanged would have produced three false failures and invited exactly
+the wrong fix — an exemption list. It is being rewritten to detect genuine `raise` statements
+via `ast`, so the guard fails only on real stubs.
+
 ### Exit criteria
 
-- `make ingest` → ~1000–1600 chunks across 2 tickers × 2 years, plus ~32 fact rows
+- `make ingest` completes; **actual** chunk count reported, plus ~32 fact rows
 - All four modes answer a real question end-to-end
 - Public URL live, rate-limited, spend-capped
 - Zero `NotImplementedError` in `src/` or `eval/`
+
+> **On the chunk-count estimate.** The "~1000–1600 chunks" figure was an estimate made before
+> ingestion existed; an exploratory run produced 469. The number is an observation, not a target
+> — chunking must not be tuned to hit it. If 469 is right for four filings under section-aware
+> chunking, the estimate was simply wrong and gets corrected here.
 
 ---
 

@@ -52,7 +52,20 @@ from typing import Any
 
 _DEFAULT_MODELS: dict[str, str] = {
     "groq": "openai/gpt-oss-120b",
+    "gemini": "gemini-2.0-flash",
     "anthropic": "claude-opus-5",
+}
+
+# Providers reachable through the OpenAI SDK by overriding `base_url`. Every
+# entry shares one wire format and one code path (`_send_openai_compatible`),
+# so adding a provider is a table entry rather than a new branch.
+#
+# Anthropic is deliberately absent: it has a genuinely different wire format
+# (`tool_use` content blocks rather than `tool_calls`) and keeps its own path.
+_OPENAI_COMPATIBLE: dict[str, tuple[str, str]] = {
+    # provider: (api-key env var, default base URL)
+    "groq": ("GROQ_API_KEY", "https://api.groq.com/openai/v1"),
+    "gemini": ("GEMINI_API_KEY", "https://generativelanguage.googleapis.com/v1beta/openai/"),
 }
 
 PROVIDER = os.environ.get("LLM_PROVIDER", "groq").strip().lower()
@@ -68,7 +81,10 @@ MODEL = os.environ.get("LLM_MODEL") or _DEFAULT_MODELS[PROVIDER]
 
 MAX_OUTPUT_TOKENS = 8192
 
-GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+# Resolved from the provider table, with `LLM_BASE_URL` as an escape hatch for
+# any other OpenAI-compatible endpoint (a self-hosted vLLM, Ollama's /v1, a
+# proxy) without touching this file. Empty for Anthropic, which ignores it.
+BASE_URL = os.environ.get("LLM_BASE_URL") or (_OPENAI_COMPATIBLE.get(PROVIDER, ("", ""))[1])
 
 
 # --- Normalized shapes -------------------------------------------------------
@@ -108,10 +124,18 @@ def default_client(provider: str | None = None) -> Any:
         import anthropic
 
         return anthropic.Anthropic()
-    if provider == "groq":
+    if provider in _OPENAI_COMPATIBLE:
         import openai
 
-        return openai.OpenAI(base_url=GROQ_BASE_URL, api_key=os.environ["GROQ_API_KEY"])
+        key_env, default_base = _OPENAI_COMPATIBLE[provider]
+        api_key = os.environ.get(key_env)
+        if not api_key:
+            raise RuntimeError(
+                f"{key_env} is not set, which {provider!r} requires. Copy .env.example "
+                f"to .env and fill it in — see the provider section there."
+            )
+        base_url = BASE_URL if provider == PROVIDER else default_base
+        return openai.OpenAI(base_url=base_url, api_key=api_key)
     raise ValueError(f"Unsupported provider {provider!r}")
 
 
@@ -127,7 +151,7 @@ def tool_specs(schemas: list[dict[str, Any]], provider: str | None = None) -> li
     provider = provider or PROVIDER
     if provider == "anthropic":
         return list(schemas)
-    if provider == "groq":
+    if provider in _OPENAI_COMPATIBLE:
         return [
             {
                 "type": "function",
@@ -169,7 +193,7 @@ class LLMSession:
         self._system = system
         if self._provider == "anthropic":
             self._messages: list[dict[str, Any]] = [{"role": "user", "content": question}]
-        elif self._provider == "groq":
+        elif self._provider in _OPENAI_COMPATIBLE:
             self._messages = [
                 {"role": "system", "content": system},
                 {"role": "user", "content": question},
@@ -189,7 +213,7 @@ class LLMSession:
         """
         if self._provider == "anthropic":
             return self._send_anthropic(tools, disable_parallel_tool_use)
-        return self._send_groq(tools, disable_parallel_tool_use)
+        return self._send_openai_compatible(tools, disable_parallel_tool_use)
 
     def add_tool_result(self, tool_call_id: str, content: str) -> None:
         """Append one tool's result to history, in whichever shape the
@@ -235,7 +259,7 @@ class LLMSession:
 
     # --- OpenAI-compatible (Groq) wire format ---
 
-    def _send_groq(self, tools: list[dict[str, Any]] | None, disable_parallel_tool_use: bool) -> NormalizedResponse:
+    def _send_openai_compatible(self, tools: list[dict[str, Any]] | None, disable_parallel_tool_use: bool) -> NormalizedResponse:
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": MAX_OUTPUT_TOKENS,
