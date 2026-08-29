@@ -356,4 +356,12 @@ def test_static_asset_lives_where_the_dockerfile_copies_it():
     assert STATIC_INDEX.parent.parent == repo_root / "src"
 
     dockerfile = (repo_root / "Dockerfile").read_text(encoding="utf-8")
-    assert "COPY src/ ./src/" in dockerfile
+    # Matched as a pattern, not a literal: the COPY carries a --chown flag so
+    # the build-time ingest runs as the runtime user (otherwise Chroma caches
+    # its ONNX model under /root and the container re-downloads 79MB on every
+    # cold start). The invariant guarded here is that src/ ships in the image
+    # at all -- flags on the instruction are not what this test is about.
+    assert re.search(r"^COPY\s+(--\S+\s+)*src/\s+\./src/\s*$", dockerfile, re.MULTILINE), (
+        "Dockerfile must COPY src/ into the image, or GET / 404s in production "
+        "while passing locally"
+    )
