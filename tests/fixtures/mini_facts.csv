@@ -1,0 +1,31 @@
+ticker,fiscal_year,period_end,metric,us_gaap_tag,value_usd,accn,form,source
+MSFT,2023,2023-06-30,revenue,RevenueFromContractWithCustomerExcludingAssessedTax,211915000000,0000950170-23-035122,10-K,XBRL companyfacts
+MSFT,2023,2023-06-30,rnd_expense,ResearchAndDevelopmentExpense,27195000000,0000950170-23-035122,10-K,XBRL companyfacts
+MSFT,2023,2023-06-30,gross_profit,GrossProfit,146052000000,0000950170-23-035122,10-K,XBRL companyfacts
+MSFT,2023,2023-06-30,operating_income,OperatingIncomeLoss,88523000000,0000950170-23-035122,10-K,XBRL companyfacts
+MSFT,2023,2023-06-30,net_income,NetIncomeLoss,72361000000,0000950170-23-035122,10-K,XBRL companyfacts
+MSFT,2023,2023-06-30,total_assets,Assets,411976000000,0000950170-23-035122,10-K,XBRL companyfacts
+MSFT,2023,2023-06-30,operating_cash_flow,NetCashProvidedByUsedInOperatingActivities,87582000000,0000950170-23-035122,10-K,XBRL companyfacts
+MSFT,2023,2023-06-30,sga,(not reported),,,,NOT TAGGED - filer reports S&M and G&A separately
+MSFT,2024,2024-06-30,revenue,RevenueFromContractWithCustomerExcludingAssessedTax,245122000000,0000950170-24-087843,10-K,XBRL companyfacts
+MSFT,2024,2024-06-30,rnd_expense,ResearchAndDevelopmentExpense,29510000000,0000950170-24-087843,10-K,XBRL companyfacts
+MSFT,2024,2024-06-30,gross_profit,GrossProfit,171008000000,0000950170-24-087843,10-K,XBRL companyfacts
+MSFT,2024,2024-06-30,operating_income,OperatingIncomeLoss,109433000000,0000950170-24-087843,10-K,XBRL companyfacts
+MSFT,2024,2024-06-30,net_income,NetIncomeLoss,88136000000,0000950170-24-087843,10-K,XBRL companyfacts
+MSFT,2024,2024-06-30,total_assets,Assets,512163000000,0000950170-24-087843,10-K,XBRL companyfacts
+MSFT,2024,2024-06-30,operating_cash_flow,NetCashProvidedByUsedInOperatingActivities,118548000000,0000950170-24-087843,10-K,XBRL companyfacts
+MSFT,2024,2024-06-30,sga,(not reported),,,,NOT TAGGED - filer reports S&M and G&A separately
+AAPL,2023,2023-09-30,revenue,RevenueFromContractWithCustomerExcludingAssessedTax,383285000000,0000320193-23-000106,10-K,XBRL companyfacts
+AAPL,2023,2023-09-30,rnd_expense,ResearchAndDevelopmentExpense,29915000000,0000320193-23-000106,10-K,XBRL companyfacts
+AAPL,2023,2023-09-30,gross_profit,GrossProfit,169148000000,0000320193-23-000106,10-K,XBRL companyfacts
+AAPL,2023,2023-09-30,operating_income,OperatingIncomeLoss,114301000000,0000320193-23-000106,10-K,XBRL companyfacts
+AAPL,2023,2023-09-30,net_income,NetIncomeLoss,96995000000,0000320193-23-000106,10-K,XBRL companyfacts
+AAPL,2023,2023-09-30,total_assets,Assets,352583000000,0000320193-23-000106,10-K,XBRL companyfacts
+AAPL,2023,2023-09-30,operating_cash_flow,NetCashProvidedByUsedInOperatingActivities,110543000000,0000320193-23-000106,10-K,XBRL companyfacts
+AAPL,2023,2023-09-30,sga,SellingGeneralAndAdministrativeExpense,24932000000,0000320193-23-000106,10-K,XBRL companyfacts
+AAPL,2024,2024-09-28,revenue,RevenueFromContractWithCustomerExcludingAssessedTax,391035000000,0000320193-24-000123,10-K,XBRL companyfacts
+AAPL,2024,2024-09-28,rnd_expense,ResearchAndDevelopmentExpense,31370000000,0000320193-24-000123,10-K,XBRL companyfacts
+AAPL,2024,2024-09-28,gross_profit,GrossProfit,180683000000,0000320193-24-000123,10-K,XBRL companyfacts
+AAPL,2024,2024-09-28,operating_income,OperatingIncomeLoss,123216000000,0000320193-24-000123,10-K,XBRL companyfacts
+AAPL,2024,2024-09-28,net_income,NetIncomeLoss,93736000000,0000320193-24-000123,10-K,XBRL companyfacts
+AAPL,2024,2024-09-28,sga,SellingGeneralAndAdministrativeExpense,26097000000,0000320193-24-000123,10-K,XBRL companyfacts
