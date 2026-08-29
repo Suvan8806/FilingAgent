@@ -215,19 +215,34 @@ The agent is an LLM tool-calling loop. It receives the question and a tool schem
 
 ```json
 {
-  "id": "q014",
+  "question_id": "q014",
   "question": "How did Microsoft's R&D expense change from FY2023 to FY2024?",
   "tier": "multi_hop",
   "answerable": true,
-  "expected_answer": "Increased from $27.2B to $29.5B, about 8.4%",
-  "expected_numeric": 29510000000,
+  "expected_answer": "Increased from $27.2B to $29.5B, about 8.5%",
+  "expected_numeric": 2315000000,
   "numeric_tolerance": 0.01,
   "expected_sources": [{"ticker": "MSFT", "fiscal_year": 2024, "section": "item7"}],
-  "expected_tools": ["lookup_financial", "calculate"]
+  "expected_tools": ["lookup_financial", "calculate", "search_filings"]
 }
 ```
 
+**Field conventions — these bind `GoldenItem`, `run_eval.py`, and `metrics.py`.** The shipped
+`data/golden.jsonl` already commits to all three; the contract follows the data.
+
+| Convention | Rule |
+|---|---|
+| Key name | **`question_id`**, not `id` |
+| Multi-hop `expected_numeric` | **the delta**, not the later-year endpoint (above: $29.51B − $27.195B) |
+| `expected_sources: []` | means **"not retrievable from the indexed corpus"** — such items are **excluded from the `recall@5` denominator**, not counted as misses |
+
+`unanswerable` items additionally carry `kind` ∈ `future` · `out_of_corpus` · `never_tagged`.
+
 - **FR8.2** **The golden set is authored by hand, by a human, with every numeric answer verified against the actual filing page.** No LLM may generate or verify golden questions or answers. An LLM-authored set judged by an LLM is circular and renders every downstream number meaningless. This is a hard constraint, not a preference. Authoring procedure, tier recipes, verification discipline, and the delegable/non-delegable split are specified in [GOLDEN_SET.md](GOLDEN_SET.md).
+
+  > **✅ SATISFIED.** `data/golden.jsonl` was authored by hand from `data/questions and answers.txt`, **before any source code existed** — nothing downstream could have contaminated it. Only the delegable half was automated: JSONL formatting, schema validation, tier-count checks, and a mechanical cross-check of every numeric answer against `data/reference/xbrl_facts.csv` (all 8 reconcile digit-for-digit; all 4 multi-hop deltas reconcile). One transcription error was caught this way and corrected against the filing (q018, Apple FY2024 Services gross margin 74.0% → 73.9%).
+  >
+  > This requirement is now **historical fact, not a pending task.** Agents may regenerate `golden.jsonl` from the human-authored source file; agents may **not** author new questions or edit any `expected_answer`.
 
 - **FR8.3** Tier distribution:
 
@@ -244,7 +259,7 @@ At least two questions must specifically probe fiscal-period misalignment (e.g. 
 
 | Metric | Definition | Method |
 |---|---|---|
-| `recall@5` | Fraction where ≥1 retrieved chunk matches an expected source | Deterministic |
+| `recall@5` | Fraction where ≥1 retrieved chunk matches an expected source. **Items with `expected_sources: []` are excluded from the denominator** — see FR8.1 conventions | Deterministic |
 | `numeric_accuracy` | Exact match within tolerance on the numeric tier | **Deterministic assertion against XBRL — not judged** |
 | `faithfulness` | Every claim supported by retrieved context | LLM judge, prose tiers only |
 | `refusal_accuracy` | Fraction of unanswerable questions correctly refused | Deterministic |
@@ -259,7 +274,13 @@ Only `faithfulness` uses the judge. Everything else is computed without an LLM i
 
 - **FR8.7** **Honest reporting of n.** The README states the sample size plainly and does not claim significance the sample cannot support. At n=25 with 4 multi-hop and 3 unanswerable items, several metrics move in large discrete increments. Say so. A stated limitation is stronger than an unstated one a reviewer discovers.
 
-- **FR8.8** **Hand-agreement check.** Five judge outputs are verified by hand against the rubric. The agreement rate is reported in the README.
+- **FR8.8** **Judge-reliability check.** *(Revised — was "hand-agreement check.")* The original requirement had a human verify five judge outputs against the rubric. With the build fully agent-executed, an agent grading the judge is the same model class judging itself and is not evidence. Three automated checks replace it:
+
+  1. **Determinism replay** — re-run the judge 3× at temperature 0 on the same 5 items; assert byte-identical verdicts. Catches a judge that is nondeterministic despite the pin.
+  2. **Cross-model agreement** — a *different* model applies the same rubric to the same 5 items; report the inter-judge agreement rate.
+  3. **Adversarial fixtures** — hand-built cases drawn from `tests/fixtures/` (never from the golden set) containing a known-unsupported claim. The judge must mark them unfaithful.
+
+  **The README must report this as "cross-model judge agreement," never as "hand-verified."** Describing an automated check as a human one is exactly the overclaim this PRD's four-arm design exists to avoid, and it would undermine the FR8.2 claim that carries the project.
 
 - **FR8.9** `run_eval.py` runs all arms and emits a markdown comparison table broken out by tier. Results are written to `results/eval_<timestamp>.json`; the latest table is pasted into the README.
 
