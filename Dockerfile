@@ -84,6 +84,15 @@ RUN python -m src.ingest
 ENV RATE_LIMIT_PER_MIN=10 \
     DAILY_REQUEST_CAP=200
 
+# Provider defaults, matching .env.example. Without these, src/llm.py falls
+# back to LLM_PROVIDER=groq and a Groq model ID, so an image deployed to a
+# host that does not set them comes up pointed at the wrong provider with no
+# key for it -- a confusing runtime failure rather than an obvious one. Only
+# GEMINI_API_KEY should need to be supplied per host; never bake that in.
+ENV LLM_PROVIDER=gemini \
+    LLM_MODEL=gemini-3.6-flash \
+    JUDGE_MODEL=gemini-3.6-flash
+
 EXPOSE 8000
 
 # PORT is injected by most container hosts (Render, Fly, Railway, Cloud Run)
