@@ -25,7 +25,83 @@ multi-hop, q022 single-hop) · all 8 numeric answers reconcile digit-for-digit a
 `xbrl_facts.csv` · all 4 multi-hop deltas reconcile · q018 corrected to 73.9% against the
 filing's Gross Margin table.
 
-**Not started:** everything else. No `src/`, `eval/`, `tests/`. `README.md` is a stub.
+### Where the build actually stands
+
+Waves 0, 1, and 2 are **complete and merged to `main`** (tip `7106498`).
+
+| | |
+|---|---|
+| Tests | **429 passing**, 0 failures, 0 xfails |
+| Coverage | **95%** (`src/` ~94%, `eval/judge.py` 100%, `eval/run_eval.py` 98%) |
+| Lint | `ruff check src/ eval/ tests/` clean |
+| Stubs | zero `raise NotImplementedError` in `src/` or `eval/` |
+| Arms | all four verified end-to-end **through the container** |
+| Front end | `GET /` — four-arm comparison with tool traces side by side |
+| Corpus | 469 chunks, 32 XBRL fact rows, baked into the image at build time |
+| Entry point | `ollama pull qwen3:8b` → `docker compose up --build` → `localhost:8000` |
+
+**Remaining: Wave 3 (measure), Wave 4 (write up), Wave 5 (apply).** Nothing is blocked.
+
+### The hosting detour, and why the project is local-first now
+
+The original plan assumed a public URL on a free host. That was tried and abandoned, for
+reasons worth recording because they are not incidental:
+
+- **Render free (512MB) OOM-killed the container** — `Exited with status 137`, on a loop:
+  start, health check passes, serve one request, killed. Note the failure mode: the platform
+  reported the service *Live* the entire time, because its health check ran before the memory
+  spike. A green health check was actively misleading.
+- **Cloud Run at 2GB worked**, and the front end served correctly — but then every hosted free
+  LLM tier failed on the actual workload. One RAG request here is ~9.5K tokens and a full
+  evaluation is ~1M:
+
+  | Provider | Free-tier limit | Outcome |
+  |---|---|---|
+  | Groq | 8K tokens/**minute** | a single call 413s |
+  | Gemini | 20 requests/**day** | unusable for eval or demo |
+  | Cerebras | — | 402 payment required |
+  | Z.AI | — | not free in practice |
+
+The project therefore runs **fully local on Ollama**: the user's own GPU, no key, no quota, no
+network egress. This is a better artifact anyway — anyone cloning the repo can run it in two
+commands without buying credits.
+
+**Model size is load-bearing.** Small models call tools but get the *arguments* wrong:
+`llama3.2:3b` produces `{"ticker":"Microsoft","fiscal_year":"2024"}` — wrong symbol, year as a
+string — so every lookup returns a `Miss` and all three tool arms fail for reasons unrelated to
+their design. `qwen3:8b` produces `{"ticker":"MSFT","fiscal_year":2024}`. Use 8B or better.
+
+### Three scoring bugs found before Wave 3, not after
+
+`eval/judge.py` and `eval/run_eval.py` had **0% test coverage** — the code that produces the
+published numbers was the untested part. Testing it first surfaced three real defects:
+
+1. **CRITICAL — multi-hop extraction returned an endpoint, not the delta.** The delta-keyword
+   branch took the *largest* figure in its window rather than the *nearest*, and the golden
+   set's own phrasing ("increased $33.2 billion ... from $211,915,000,000") puts both in that
+   window. The tier scored **1/4**; it now scores 4/4. This would have flattened the headline
+   `agent_custom` vs `baseline_tools` multi-hop claim to a tie for reasons having nothing to do
+   with either arm — and it would have looked like a genuine null result.
+2. **HIGH — a missing judge fixture scored as a failure** rather than being excluded. With
+   `eval/fixtures/judgments/` empty, `make eval` would have published `single_hop 0/10` for
+   every arm, indistinguishable from a real faithfulness collapse.
+3. **MEDIUM — the results table printed a rate over judged items but counts over all items**,
+   so 4-of-10 judged with 2 faithful rendered as `50% (2/10)`.
+
+Confirmed correct and now pinned: `recall@5` genuinely excludes the six unretrievable items
+(denominator 19, not 25); the numeric tier is never judged; tolerance `0` means exact.
+
+### Known gaps going into Wave 3
+
+- **`n=25`, and only 4 multi-hop items.** The headline comparison will almost certainly not
+  reach significance. PRD §10 already commits to reporting that honestly.
+- **A local 8B model scores lower than a frontier model would.** Absolute numbers will be
+  modest. The comparison stays internally valid — all four arms share one model — but the
+  write-up must state the ceiling rather than imply the scores reflect the design.
+- **`src/llm.py`'s module docstring is stale**, still describing a `groq | anthropic` choice
+  when the table now holds six providers.
+- **Wave 5 requires a live link or a "run it locally" pitch.** The README now leads with the
+  two-command local setup; there is no public URL.
 
 ### What changed in v3
 
