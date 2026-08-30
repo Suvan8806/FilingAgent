@@ -117,6 +117,31 @@ MAX_OUTPUT_TOKENS = 8192
 # proxy) without touching this file. Empty for Anthropic, which ignores it.
 BASE_URL = os.environ.get("LLM_BASE_URL") or (_OPENAI_COMPATIBLE.get(PROVIDER, ("", ""))[1])
 
+# Reasoning models emit a hidden thinking block before every answer. On the
+# local default (qwen3:8b via Ollama) that is not a minor tax — measured on
+# this machine, same question, thinking on vs off:
+#
+#     on   65.1s   512 output tokens (hit the cap mid-thought)
+#     off   5.0s    23 output tokens
+#
+# ~13x, applied to EVERY turn of EVERY arm. A full four-arm eval run is the
+# difference between roughly seven hours and one.
+#
+# Disabling it does not compromise the experiment. The comparison is between
+# arms, and this setting is identical across all four — the same way MODEL
+# above is pinned once and shared. It would only matter if the claim were
+# about an absolute score rather than `agent_custom` vs `baseline_tools`.
+#
+# Ollama-only by default because `reasoning_effort` is the one switch that
+# actually works on its OpenAI-compatible endpoint (`chat_template_kwargs`
+# and a `/no_think` prompt suffix were both measured as no-ops), and because
+# sending an unknown field to another provider risks a 400. Override with
+# LLM_REASONING_EFFORT — empty string re-enables thinking.
+_DEFAULT_REASONING_EFFORT = {"ollama": "none"}
+REASONING_EFFORT = os.environ.get(
+    "LLM_REASONING_EFFORT", _DEFAULT_REASONING_EFFORT.get(PROVIDER, "")
+).strip()
+
 
 # --- Normalized shapes -------------------------------------------------------
 
@@ -299,6 +324,8 @@ class LLMSession:
             "max_tokens": MAX_OUTPUT_TOKENS,
             "messages": self._messages,
         }
+        if REASONING_EFFORT:
+            kwargs["reasoning_effort"] = REASONING_EFFORT
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"

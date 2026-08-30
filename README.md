@@ -13,8 +13,8 @@ leaving the box — inference happens on your GPU through Ollama.
 ## Quickstart
 
 ```bash
-# 1. Install Ollama (https://ollama.com) and pull a tool-calling model
-ollama pull qwen3:8b
+# 1. Install Ollama (https://ollama.com), then build the model this app expects
+make model    # == ollama pull qwen3:8b && ollama create filingagent-qwen3 -f Modelfile
 
 # 2. Build and run
 docker compose up --build
@@ -26,6 +26,33 @@ That's it. The image bakes the vector index (469 chunks), the XBRL fact table
 (32 rows), and the embedding model in at build time, so there's no ingestion
 step and the container needs no network access at all.
 
+> No `make` on Windows? Run the two commands in the comment above directly.
+
+### Step 1 is not optional
+
+`make model` doesn't just pull a model — it builds a variant with the context
+window capped at 12288 tokens (see `Modelfile`). Stock `qwen3:8b` defaults to a
+**40960**-token window and sizes its KV cache from that, turning a 5.2GB model
+into an **11GB** reservation. On a 6GB card that isn't "slower", it's a hard
+failure partway through a run:
+
+```
+HTTP 500: model requires more system memory (5.6 GiB) than is available (5.3 GiB)
+```
+
+Measured on an RTX 3050 6GB / 15.4GB RAM laptop:
+
+| Context | Reservation | On CPU | Result |
+|---|---|---|---|
+| 40960 (stock) | 11.0 GB | 54% | 500 error under load |
+| **12288 (`make model`)** | **7.2 GB** | **26%** | **13.5s per tool turn** |
+
+The app also sets `LLM_REASONING_EFFORT=none`. qwen3 is a reasoning model: left
+alone it emits a hidden thinking block before every answer, measured here at
+**65.1s vs 5.0s** on an identical question — ~13x, on *every turn of every
+arm*. It's applied identically to all four arms, so the comparison between them
+is unaffected; only absolute wall-clock changes.
+
 **Model choice matters more than it looks.** Three of the four arms are
 tool-calling loops, and small models get tool *arguments* wrong even when they
 correctly decide to call something. On the same prompt:
@@ -33,15 +60,18 @@ correctly decide to call something. On the same prompt:
 | Model | Tool call produced |
 |---|---|
 | `llama3.2:3b` | `{"ticker":"Microsoft","fiscal_year":"2024"}` — wrong symbol, year as string; every lookup returns a `Miss` |
-| `qwen3:8b` | `{"ticker":"MSFT","fiscal_year":2024}` — correct |
+| `qwen2.5-coder:7b` | emitted the call as *prose text* rather than a tool call — scores zero on every tool arm |
+| `qwen3:8b` | `{"ticker":"MSFT","metric":"revenue","fiscal_year":2024}` — correct |
 
-Use an 8B-class model or better, or the tool arms fail for reasons that have
-nothing to do with their design.
+Use an 8B-class model with native tool calling, or the tool arms fail for
+reasons that have nothing to do with their design.
 
-If Ollama reports *"requires more system memory than is available"*, cap the
-context — it defaults to the model's full window and the KV cache dominates:
-`OLLAMA_CONTEXT_LENGTH=16384` (restart Ollama afterward). That comfortably
-fits the ~9.5K-token requests this app makes.
+If you want to change `num_ctx`, size it from the real workload: a retrieval
+prompt is ~2,010 tokens (5 chunks at `baseline._TOP_K`), and the worst
+realistic case is an agent spending all five turns on `search_filings` —
+~11,000 tokens including the ~1,500-token tool schemas. 12288 clears that.
+8192 would silently truncate it, which is worse than failing loudly: the arm
+still answers, just from a context with the evidence cut off.
 
 ## The four arms
 

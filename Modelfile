@@ -1,0 +1,33 @@
+# Builds `filingagent-qwen3` — qwen3:8b with a context window that fits a
+# 6GB consumer GPU. Run `make model` once; docker-compose points LLM_MODEL here.
+#
+# Why this is a checked-in file rather than a README note:
+#
+# Ollama sizes its KV cache from the model's FULL context window unless told
+# otherwise. For qwen3:8b that default is 40960 tokens, which turns a 5.2GB
+# model into an 11GB reservation. On a 6GB card the result is not "slower" —
+# it is a hard failure:
+#
+#     HTTP 500: model requires more system memory (5.6 GiB)
+#               than is available (5.3 GiB)
+#
+# because the overflow spills to host RAM a normal desktop session has already
+# spent. Measured on an RTX 3050 6GB / 15.4GB RAM laptop:
+#
+#     default 40960  ->  11.0GB reservation, 54% CPU, 500 error under load
+#     capped  12288  ->   7.2GB reservation, 26% CPU, 13.5s per tool turn
+#
+# 12288 is sized from the real workload, not guessed. A retrieval prompt is
+# ~2,010 tokens (5 chunks at baseline._TOP_K, measured against the built
+# index), and the worst realistic case is an agent spending all 5 turns on
+# search_filings: ~11,000 tokens including the ~1,500-token tool schemas.
+# 12288 clears that. 8192 would silently truncate it, which is worse than
+# failing loudly — the arm still answers, just from a context with the
+# evidence cut off, and it scores as a reasoning failure.
+#
+# Raise it if you have more VRAM. Every increase buys headroom and costs GPU
+# residency, and residency is what makes this fast.
+
+FROM qwen3:8b
+
+PARAMETER num_ctx 12288

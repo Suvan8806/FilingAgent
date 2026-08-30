@@ -1,0 +1,28 @@
+# Normalize line endings to LF in the working tree, not just in the index.
+#
+# Without this, Git for Windows' default `core.autocrlf=true` rewrites LF to
+# CRLF on checkout. The repo then holds one set of bytes and the disk another:
+#
+#     $ git ls-files --eol src/static/index.html
+#     i/lf    w/crlf    src/static/index.html
+#
+# That breaks a real guarantee, not merely a test. `src/static/index.html` is
+# served straight off disk by GET / with no templating, and
+# tests/test_frontend.py asserts the response is byte-for-byte the committed
+# asset — which is what makes its static checks (mode strings, no external
+# fetches) statements about production rather than about a file that happens
+# to sit on disk. Under autocrlf that assertion is false on every Windows
+# clone, so a fresh checkout goes red for a reason unrelated to the code.
+#
+# The same mismatch would otherwise reach the image: the Dockerfile COPYs this
+# tree into a Linux container, baking CRLF into the served asset.
+
+* text=auto eol=lf
+
+# Binary — never transform these.
+*.png binary
+*.jpg binary
+*.ico binary
+*.onnx binary
+*.sqlite binary
+*.bin binary

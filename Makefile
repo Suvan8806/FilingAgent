@@ -1,4 +1,12 @@
-.PHONY: ingest serve eval eval-live test lint
+.PHONY: model ingest serve eval eval-live test lint
+
+# Build the local model the app expects. Run this once, before `docker compose
+# up`. See Modelfile for why stock qwen3:8b cannot be used directly: its
+# default 40960-token context reserves ~11GB and hard-fails on a 6GB card.
+# Idempotent, and free on disk — Ollama layers are shared with the base model.
+model:
+	ollama pull qwen3:8b
+	ollama create filingagent-qwen3 -f Modelfile
 
 # Parse data/raw/ + data/reference/, chunk, embed, and populate the Chroma
 # store and SQLite facts table. Idempotent — safe to re-run (FR1.6).

@@ -99,9 +99,14 @@ ENV RATE_LIMIT_PER_MIN=10 \
 # host that does not set them comes up pointed at the wrong provider with no
 # key for it -- a confusing runtime failure rather than an obvious one. Only
 # GEMINI_API_KEY should need to be supplied per host; never bake that in.
+# LLM_MODEL is `filingagent-qwen3` (built on the host by `make model`), not
+# stock qwen3:8b: the stock 40960-token context reserves ~11GB and hard-fails
+# on a 6GB card. LLM_REASONING_EFFORT=none suppresses qwen3's thinking block,
+# worth ~13x per turn. Both are explained in Modelfile and src/llm.py.
 ENV LLM_PROVIDER=ollama \
-    LLM_MODEL=qwen3:8b \
-    JUDGE_MODEL=qwen3:8b \
+    LLM_MODEL=filingagent-qwen3 \
+    JUDGE_MODEL=filingagent-qwen3 \
+    LLM_REASONING_EFFORT=none \
     LLM_BASE_URL=http://host.docker.internal:11434/v1
 
 EXPOSE 8000

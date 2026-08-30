@@ -49,8 +49,18 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       LLM_PROVIDER: "${LLM_PROVIDER:-ollama}"
-      LLM_MODEL: "${LLM_MODEL:-qwen3:8b}"
-      JUDGE_MODEL: "${JUDGE_MODEL:-qwen3:8b}"
+      # `filingagent-qwen3`, not stock `qwen3:8b` — built by `make model` from
+      # the Modelfile, which caps the context at 12288. Stock qwen3:8b defaults
+      # to a 40960 window, reserves ~11GB for the KV cache, and hard-fails on a
+      # 6GB card with "requires more system memory than is available".
+      LLM_MODEL: "${LLM_MODEL:-filingagent-qwen3}"
+      JUDGE_MODEL: "${JUDGE_MODEL:-filingagent-qwen3}"
+      # qwen3 is a reasoning model: left alone it emits a hidden thinking block
+      # before every answer — measured at 65.1s vs 5.0s for the same question.
+      # src/llm.py already defaults this to "none" for Ollama; exported here so
+      # thinking can be re-enabled (empty string) without editing code. Note the
+      # single `-`, not `:-`: an explicitly empty value must survive.
+      LLM_REASONING_EFFORT: "${LLM_REASONING_EFFORT-none}"
       # Points at the host's Ollama. Override to use a hosted provider.
       LLM_BASE_URL: "${LLM_BASE_URL:-http://host.docker.internal:11434/v1}"
 
