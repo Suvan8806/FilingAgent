@@ -51,6 +51,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 _DEFAULT_MODELS: dict[str, str] = {
+    "ollama": "qwen3:8b",
     "zai": "glm-4.7-flash",
     "cerebras": "gpt-oss-120b",
     "groq": "openai/gpt-oss-120b",
@@ -80,7 +81,23 @@ _OPENAI_COMPATIBLE: dict[str, tuple[str, str]] = {
     # a single call. Requests-per-minute was never the binding constraint —
     # the whole eval is ~100 calls.
     "cerebras": ("CEREBRAS_API_KEY", "https://api.cerebras.ai/v1"),
+    # Ollama — local inference, no network egress, no account, no quota.
+    # This is the default: every hosted free tier tested (Groq 8K tok/min,
+    # Gemini 20 req/day, Cerebras, Z.AI) fails to serve a ~9.5K-token RAG
+    # request at the volume an eval run needs, and a reviewer cloning this
+    # repo should not have to buy credits to see it work.
+    #
+    # The key env var is a placeholder: Ollama ignores auth, but the OpenAI
+    # SDK refuses to construct a client with an empty api_key, so
+    # `default_client` substitutes a dummy rather than making users invent
+    # one. See OLLAMA_NEEDS_NO_KEY below.
+    "ollama": ("OLLAMA_API_KEY", "http://localhost:11434/v1"),
 }
+
+# Providers that ignore authentication entirely. Kept as a set rather than a
+# special case inside default_client so adding another local runtime (llama.cpp
+# server, vLLM, LM Studio) stays a one-line change.
+OLLAMA_NEEDS_NO_KEY = frozenset({"ollama"})
 
 PROVIDER = os.environ.get("LLM_PROVIDER", "groq").strip().lower()
 if PROVIDER not in _DEFAULT_MODELS:
@@ -143,6 +160,9 @@ def default_client(provider: str | None = None) -> Any:
 
         key_env, default_base = _OPENAI_COMPATIBLE[provider]
         api_key = os.environ.get(key_env)
+        if not api_key and provider in OLLAMA_NEEDS_NO_KEY:
+            # Ollama ignores the header; the SDK just refuses an empty string.
+            api_key = "not-needed"
         if not api_key:
             raise RuntimeError(
                 f"{key_env} is not set, which {provider!r} requires. Copy .env.example "

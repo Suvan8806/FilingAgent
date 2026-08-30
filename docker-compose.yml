@@ -1,36 +1,78 @@
-# FilingAgent local deployment (Lane G — PLAN.md Wave 1 / FR10.2).
+# FilingAgent — fully local. No accounts, no API keys, no network egress.
 #
-# Brings up the API with a persisted Chroma volume. The image (see
-# Dockerfile) bakes the vector index and facts DB in at build time; the
-# named volumes below let that baked-in data survive `docker compose down`
-# / container recreation instead of being rebuilt from scratch on every
-# restart. Docker populates a fresh named volume from the image's own
-# directory contents the first time it's mounted, so this does not shadow
-# the baked-in index with an empty directory.
+#   1. Install Ollama (https://ollama.com) and pull a tool-calling model:
+#        ollama pull qwen3:8b
+#   2. docker compose up --build
+#   3. open http://localhost:8000
 #
-# Usage:
-#   cp .env.example .env   # fill in ANTHROPIC_API_KEY at minimum
-#   docker compose up --build
-#   curl http://localhost:8000/healthz
+# Inference runs on your own GPU via Ollama on the host. The image bakes the
+# vector index (469 chunks), the XBRL fact table (32 rows), and the embedding
+# model in at build time, so the container needs no network at all.
+#
+# Why the container talks to the host
+# -----------------------------------
+# Ollama runs on the host, not in this compose file, so it can reach the GPU
+# directly — passing an NVIDIA GPU into a container works on Linux but is
+# unreliable on Docker Desktop for Windows/Mac, which is what most people
+# cloning this will have. `host.docker.internal` resolves to the host from
+# inside the container; the extra_hosts entry adds it on Linux, where it is
+# not built in.
+#
+# Model choice matters more than it looks
+# ---------------------------------------
+# Three of the four arms are tool-calling loops, and small models get tool
+# ARGUMENTS wrong even when they correctly decide to call something. Measured
+# here on the same prompt:
+#   llama3.2:3b -> {"ticker":"Microsoft","fiscal_year":"2024"}   wrong symbol,
+#                                                                year as string
+#   qwen3:8b    -> {"ticker":"MSFT","fiscal_year":2024}          correct
+# The 3B model's calls return Miss for every lookup, which would make all
+# three tool arms fail for reasons that have nothing to do with their design.
+# Use an 8B-class model or better.
+#
+# Why no volume over /app/chroma_db
+# ---------------------------------
+# An earlier version mounted one there to "persist" the index. That is
+# backwards: the index is a build artifact, not user data. Docker seeds a
+# named volume from the image only the FIRST time it is mounted, so after any
+# rebuild a stale volume silently shadows the newly built index — you would
+# rebuild with new filings and keep querying the old ones, with nothing in the
+# logs to say so. Traces are genuinely runtime state, so those do get a volume.
 
 services:
   api:
     build: .
-    image: filingagent-api:latest
+    image: filingagent:local
     ports:
       - "${API_PORT:-8000}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}"
-      EDGAR_USER_AGENT: "${EDGAR_USER_AGENT:-FilingAgent research contact@example.com}"
+      LLM_PROVIDER: "${LLM_PROVIDER:-ollama}"
+      LLM_MODEL: "${LLM_MODEL:-qwen3:8b}"
+      JUDGE_MODEL: "${JUDGE_MODEL:-qwen3:8b}"
+      # Points at the host's Ollama. Override to use a hosted provider.
+      LLM_BASE_URL: "${LLM_BASE_URL:-http://host.docker.internal:11434/v1}"
+
+      # Optional — only needed if LLM_PROVIDER is switched to a hosted one.
+      # Deliberately NOT compose's `:?` required-variable syntax: that made an
+      # unset ANTHROPIC_API_KEY abort startup even when running fully locally.
+      # src/llm.py already raises a precise error naming the variable the
+      # selected provider needs.
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      GROQ_API_KEY: "${GROQ_API_KEY:-}"
+      CEREBRAS_API_KEY: "${CEREBRAS_API_KEY:-}"
+      ZAI_API_KEY: "${ZAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+
       CHROMA_DIR: /app/chroma_db
       TRACE_DB: /app/trace_data/traces.sqlite
-      # FR6.3 — public deployment safety. Override in .env for local dev
-      # if the defaults are too restrictive; never remove entirely before
-      # the link goes public.
+
+      # FR6.3 rails. Less critical on localhost, but these are the values the
+      # tests assert against — keep them aligned with .env.example.
       RATE_LIMIT_PER_MIN: "${RATE_LIMIT_PER_MIN:-10}"
       DAILY_REQUEST_CAP: "${DAILY_REQUEST_CAP:-200}"
     volumes:
-      - chroma_data:/app/chroma_db
       - trace_data:/app/trace_data
     restart: unless-stopped
     healthcheck:
@@ -38,8 +80,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 20s
 
 volumes:
-  chroma_data:
   trace_data:

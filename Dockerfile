@@ -13,14 +13,24 @@
 #     only"). The container never ingests at boot: a multi-minute ingest
 #     on container start times out free-tier hosting.
 #
-# Build: docker build -t filingagent-api .
-# Run:   docker run -p 8000:8000 -e GEMINI_API_KEY=... filingagent-api
-# (GEMINI_API_KEY is the default provider's key — see LLM_PROVIDER in
-# .env.example. Never bake a key into the image; pass it at run time.)
-# (docker-compose.yml is the preferred way to run this locally — it also
-# mounts a persisted volume over CHROMA_DIR so the store baked in here
-# survives container recreation; Docker copies this image's baked-in
-# directory contents into a fresh named volume on first use.)
+# Prefer `docker compose up --build` — see docker-compose.yml, which wires the
+# host networking this image needs and is the documented entry point.
+#
+# Direct use, for reference:
+#   docker build -t filingagent .
+#   docker run -p 8000:8000 --add-host host.docker.internal:host-gateway filingagent
+#
+# The default provider is Ollama on the HOST (see the ENV block below), so no
+# API key is required and no request leaves the machine. Inference runs on the
+# host's GPU: passing an NVIDIA device into a container works on Linux but is
+# unreliable on Docker Desktop, which is what most people cloning this have.
+#
+# To use a hosted provider instead, override LLM_PROVIDER, LLM_MODEL, and that
+# provider's key at run time. Never bake a key into the image.
+#
+# Note: nothing is mounted over CHROMA_DIR. The index is a build artifact, not
+# user data — a named volume there would be seeded once and then silently
+# shadow every later rebuild. See docker-compose.yml for the full reasoning.
 
 FROM python:3.12-slim AS base
 
@@ -89,9 +99,10 @@ ENV RATE_LIMIT_PER_MIN=10 \
 # host that does not set them comes up pointed at the wrong provider with no
 # key for it -- a confusing runtime failure rather than an obvious one. Only
 # GEMINI_API_KEY should need to be supplied per host; never bake that in.
-ENV LLM_PROVIDER=groq \
-    LLM_MODEL=openai/gpt-oss-120b \
-    JUDGE_MODEL=openai/gpt-oss-120b
+ENV LLM_PROVIDER=ollama \
+    LLM_MODEL=qwen3:8b \
+    JUDGE_MODEL=qwen3:8b \
+    LLM_BASE_URL=http://host.docker.internal:11434/v1
 
 EXPOSE 8000
 

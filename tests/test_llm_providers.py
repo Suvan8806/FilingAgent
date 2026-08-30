@@ -108,7 +108,19 @@ def test_the_configured_provider_is_itself_fully_supported() -> None:
 def test_every_openai_compatible_provider_declares_a_key_var_and_base_url(provider: str) -> None:
     key_env, base_url = llm._OPENAI_COMPATIBLE[provider]
     assert key_env.endswith("_API_KEY"), f"{provider} key var {key_env!r} breaks the convention"
-    assert base_url.startswith("https://"), f"{provider} base URL must be https, got {base_url!r}"
+
+    # Plain http is allowed only for loopback: a local runtime like Ollama has
+    # no TLS and needs none, since the traffic never leaves the machine. Any
+    # provider reached over the network must be https, or a key would cross
+    # the wire in the clear.
+    if base_url.startswith("http://"):
+        host = base_url.removeprefix("http://").split("/")[0].split(":")[0]
+        assert host in {"localhost", "127.0.0.1", "host.docker.internal"}, (
+            f"{provider} uses plain http against non-loopback host {host!r}; "
+            "remote providers must use https"
+        )
+    else:
+        assert base_url.startswith("https://"), f"{provider} base URL must be https, got {base_url!r}"
 
 
 def test_an_unknown_provider_is_rejected_rather_than_guessed() -> None:

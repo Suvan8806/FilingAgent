@@ -393,10 +393,32 @@ def test_a_live_client_cannot_be_constructed_under_this_fixture(no_live_api_keys
     # actionable message). What this test pins is the property that matters:
     # with no key in the environment, no client object can be built, and the
     # failure names the missing variable so the operator knows what to set.
+    keyless = set(real_llm.OLLAMA_NEEDS_NO_KEY)
+
     for provider, (key_env, _base) in sorted(_openai_compatible_table().items()):
+        if provider in keyless:
+            continue
         with pytest.raises((KeyError, RuntimeError)) as excinfo:
             real_llm.default_client(provider)
         assert key_env in str(excinfo.value)
+
+    # Keyless providers are exempt by construction, but the exemption is
+    # pinned rather than assumed. Two reasons to assert it instead of just
+    # skipping:
+    #
+    #  1. A keyless provider CAN be constructed here, so the blanket
+    #     protection above no longer covers everything. Ollama is loopback,
+    #     and this file's socket guard deliberately permits loopback so
+    #     TestClient works — so a mis-scoped stub could reach a real local
+    #     Ollama and silently pass instead of failing. Not billed, but not
+    #     hermetic either.
+    #  2. If someone adds another keyless provider later, this fails until
+    #     they have thought about (1).
+    assert keyless == {"ollama"}, (
+        f"New keyless provider(s) {keyless - {'ollama'}}: the no-live-client guard "
+        "above cannot protect them. Confirm tests cannot reach them before "
+        "widening this."
+    )
 
 
 def test_stub_llm_fixture_actually_replaces_the_boundary(stub_llm):
