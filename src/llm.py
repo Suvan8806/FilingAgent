@@ -51,8 +51,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 _DEFAULT_MODELS: dict[str, str] = {
+    "zai": "glm-4.7-flash",
+    "cerebras": "gpt-oss-120b",
     "groq": "openai/gpt-oss-120b",
-    "gemini": "gemini-2.0-flash",
+    "gemini": "gemini-3.6-flash",
     "anthropic": "claude-opus-5",
 }
 
@@ -66,6 +68,18 @@ _OPENAI_COMPATIBLE: dict[str, tuple[str, str]] = {
     # provider: (api-key env var, default base URL)
     "groq": ("GROQ_API_KEY", "https://api.groq.com/openai/v1"),
     "gemini": ("GEMINI_API_KEY", "https://generativelanguage.googleapis.com/v1beta/openai/"),
+    # Z.AI / Zhipu. 200K context on the free tier, which is what matters here:
+    # one RAG request measured 9.5K tokens, and Groq's free 8K/min ceiling
+    # could not fit a single call. Free-tier throttling is on CONCURRENCY
+    # (1 in flight), not requests/day — so callers must serialize rather than
+    # fan out. `api.z.ai` is the international endpoint; `open.bigmodel.cn`
+    # is the mainland-China one and is the better choice from there.
+    "zai": ("ZAI_API_KEY", "https://api.z.ai/api/paas/v4"),
+    # Cerebras. Chosen for its TOKEN ceiling, not its request rate: one RAG
+    # request here measures ~9.5K tokens, and Groq's free 8K/min could not fit
+    # a single call. Requests-per-minute was never the binding constraint —
+    # the whole eval is ~100 calls.
+    "cerebras": ("CEREBRAS_API_KEY", "https://api.cerebras.ai/v1"),
 }
 
 PROVIDER = os.environ.get("LLM_PROVIDER", "groq").strip().lower()
