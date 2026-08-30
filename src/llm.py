@@ -283,16 +283,46 @@ class LLMSession:
             for tc in raw_tool_calls
         ]
 
-        assistant_entry: dict[str, Any] = {"role": "assistant", "content": message.content}
-        if raw_tool_calls:
-            assistant_entry["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                }
-                for tc in raw_tool_calls
-            ]
-        self._messages.append(assistant_entry)
+        # Append the provider's OWN message, not a hand-rebuilt copy.
+        #
+        # Rebuilding it keeps only `content` and `tool_calls`, silently
+        # dropping provider-specific fields. Gemini 3.x attaches a
+        # `thought_signature` to each tool call, at
+        # `tool_calls[].extra_content.google.thought_signature`, and it MUST
+        # be echoed back on the following turn — otherwise the API rejects
+        # the request outright:
+        #
+        #   400 Function call is missing a thought_signature in functionCall
+        #   parts. This is required for tools to work correctly.
+        #
+        # The failure is invisible in single-shot tool calling, because
+        # nothing is ever sent back. It only appears on the second request of
+        # a conversation, which is why `baseline_rag` worked in production
+        # while all three tool-using arms returned 500.
+        #
+        # `exclude_none=True` drops the nulls providers pad responses with
+        # (`refusal`, `audio`, ...) that some reject on echo-back, while
+        # preserving anything they actually populated.
+        #
+        # The fallback reconstructs the message for test doubles that are
+        # plain objects rather than SDK models. It is deliberately the
+        # fallback and not the default: a hand-built dict is what caused the
+        # production failure above, and it passed every unit test, because a
+        # fake cannot drop a field it never had.
+        dump = getattr(message, "model_dump", None)
+        if callable(dump):
+            self._messages.append(dump(exclude_none=True))
+        else:
+            entry: dict[str, Any] = {"role": "assistant", "content": message.content}
+            if raw_tool_calls:
+                entry["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                    }
+                    for tc in raw_tool_calls
+                ]
+            self._messages.append(entry)
 
         return NormalizedResponse(text=(message.content or "").strip(), tool_calls=tool_calls)
